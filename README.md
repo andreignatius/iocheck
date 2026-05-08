@@ -1,93 +1,109 @@
-# iocheck
+# iocheck — Build & Scale Challenge
 
+Build a small threat-intel lookup service and make it autoscale correctly on Kubernetes.
 
+**Format:** Take Home, 2-3 days
 
-## Getting started
+**AI assistance:** unrestricted. Use Claude, ChatGPT, Cursor, Copilot, anything. The follow-up call is where we calibrate — be ready to defend every line, every dependency, and every design choice as if you wrote it from scratch.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+**Language:** TypeScript, to align with our existing tech stack.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+---
 
-## Add your files
+## Background
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+You're building **iocheck**, a backend service used by SOC analysts to check whether a given **IOC (Indicator of Compromise)** — an IP, domain, or file hash — is known-malicious. IOCs are forensic artifacts: a suspicious IP in a firewall log, a sha256 of a binary on an endpoint, a domain seen in DNS. Analysts query a service like this on every alert.
 
+Real-world equivalents: VirusTotal, AbuseIPDB, GreyNoise. You're building a stripped-down internal version.
+
+### Product context (verbatim from the team)
+
+> *"Our previous attempt added a CPU-based HorizontalPodAutoscaler at 70% utilization with min=2, max=8.*
+> *In testing, pods rarely scale up — even when SOC alert storms drive p99 latency to 2-3 seconds.*
+> *We need autoscaling that actually responds to the workload this service sees. CPU at 70% is not good enough."*
+
+You should treat this as a hint, not a constraint: a CPU-based HPA at 70% will likely not satisfy the requirements below. Part of the exercise is figuring out *why* and choosing a better signal — with evidence.
+
+---
+
+## Functional requirements
+
+### API
+
+`POST /lookup`
+
+```json
+// request
+{ "type": "ip" | "domain" | "sha256", "value": "<string>" }
+// response 200
+{
+  "verdict": "malicious" | "unknown",
+  "ioc": { "type": "...", "value": "...", "source": "...", "score": 0-100 } // present iff malicious
+}
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/strongkeep-public/iocheck.git
-git branch -M main
-git push -uf origin main
+
+`POST /ioc` — admin upsert
+
+```json
+// request
+{ "type": "...", "value": "...", "source": "...", "score": 0-100 }
+// response 201
+{ ...same shape... }
 ```
 
-## Integrate with your tools
+`GET /healthz` — liveness, returns 200 when process is running
+`GET /readyz` — returns 200 only when DB and cache are reachable
+`GET /metrics` — Prometheus exposition format
 
-* [Set up project integrations](https://gitlab.com/strongkeep-public/iocheck/-/settings/integrations)
+### Storage
 
-## Collaborate with your team
+- **Persistent store** — your choice (relational, KV, document — whatever fits the access pattern). Schema must let you upsert and look up by `(type, value)` and return `source`, `score`, `added_at`. Justify the choice in your writeup.
+- **Cache layer** — your choice. Read-through, sensible TTL, invalidate on upsert.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+### Workload
 
-## Test and Deploy
+Read-heavy, cache-friendly, bursty (alert storms = ~10× RPS spikes). p99 < 200ms required, including during spikes.
 
-Use the built-in continuous integration in GitLab.
+---
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Platform requirements
 
-***
+Run on a local Kubernetes cluster (`kind`, `k3d`, `minikube` — your choice).
 
-# Editing this README
+You must have:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+- Containerized service (Dockerfile)
+- k8s manifests (or Helm) for: Deployment, Service, your DB, your cache
+- **Liveness, readiness, startup probes** wired correctly
+- **PodDisruptionBudget** with `minAvailable >= 2`
+- **Resource requests + limits** on every container
+- **Horizontal autoscaling** that responds to the actual workload — see below
 
-## Suggestions for a good README
+---
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+## The four challenges
 
-## Name
-Choose a self-explaining name for your project.
+1. **Explain why CPU-based HPA is wrong for this workload.** Measured evidence, not theory.
+2. **Make sure pods share load.**
+3. **Build an autoscaler that scales up and down.** You decide min and max replicas — defend the choice.
+4. **Prove it works with a reproducible test.**
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+---
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## Deliverables
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Send a git URL (public or private invite) containing:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+1. **Source + manifests + Dockerfile + a** `Makefile` (or equivalent)
+2. **README** — reproduces your setup
+3. **Load test tool** — script that we can run to drive load
+4. **A writeup** (markdown, ~1-2 pages) — architecture, your answers to all four challenges, plus: what happens when your autoscaler's data source is itself unavailable, and one thing you'd do differently with another week.
+5. **AI chat logs** — local transcripts
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+We'll schedule a 30-min walkthrough call where you'll show us:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+- Spinning up the cluster from a clean state
+- Driving load and showing replica count climbing
+- Stopping load and showing it return to 2
+- The actual metric your autoscaler is reading
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
