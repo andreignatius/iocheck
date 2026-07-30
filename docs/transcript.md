@@ -598,3 +598,52 @@ Correct — that was a paraphrase, and two screenshot turns hadn't been logged a
 **Fix (plan §4c updated):** `query = sum(rate(http_requests_total{namespace="iocheck", route="/lookup"}[1m]))` (TOTAL), `threshold` = per-pod target, explicit `metricType: AverageValue`, `serverAddress` = prometheus svc DNS. **Bonus:** `kube_pod_info` doesn't exist (no KSM in minimal stack); added `route="/lookup"` filter so probe/scrape traffic doesn't inflate the signal. Rule: *"query=aggregate, threshold=per-pod; KEDA divides; pre-dividing double-normalizes → oscillates."* Applied in M6. Plan + journal updated.
 
 ---
+
+## Turn 27 — 2026-07-30 20:55 +08
+
+### Andre (verbatim)
+
+> before we do M5 i think this is probably the trickiest part as it is the part where we gather evidence... can we detail what are all the potential pitfalls and document them to watch out for them before implementation?
+>
+> i'm thinking of below:
+> 1. cpu request sizing + io bound load must align , if request too low the thesis collapses... if load not io bound or cache hit heavy there is no spike to show
+> 2. the k6 load has to generate many distinct unknowns for the negative caching part to hit
+> 3. we have to hold the spike reasonably long enough for a convincing demo
+>
+> please let me know if you think of more!
+
+### Claude (summary)
+
+Confirmed Andre's 3 (all real) + added ~11 more, grouped: **A signal integrity** — CPU util must stay <70% of request (else thesis inverts); latency is **concurrency-bound not throughput-bound** (queue on PG pool while CPU idles); PG-pool cliff — saturate without erroring (`connectionTimeoutMillis 3000` → waiter >3s = 500 not latency, may need to raise it). **B load design** — distinct values, **uniqueness must outpace neg-cache TTL 60s**, keep-alive pinning (challenge #2), hold spike ~2–3min, run k6 in-cluster own-ns vs Service FQDN. **C environment** — laptop **shared host CPU can confound** "CPU low" (keep load moderate), metrics-server 15s lag. **D baseline/evidence** — replicate team's **70%/min2/max8** CPU-HPA, show CPU **real % not `<unknown>`**, **one autoscaler at a time** (delete CPU-HPA before KEDA), aligned reproducible capture. Flagged two prep items (pool-timeout env; delete CPU-HPA before KEDA).
+
+---
+
+## Turn 28 — 2026-07-30 20:55 +08
+
+### Andre (verbatim)
+
+> great. can we document this to update the plan?
+
+### Claude (summary)
+
+Added **plan §6a — M5 evidence pitfalls** (14 items in 4 groups A–D + the "call sentence" synthesis). Journal entry added; two carry-forward items recorded (make PG `connectionTimeoutMillis` env-configurable so p99 climbs instead of erroring; CPU-HPA is a throwaway to delete before M6 KEDA).
+
+---
+
+## Turn 29 — 2026-07-30 21:04 +08
+
+### Andre (verbatim)
+
+> looks good! re pitfall doc, am thinking right...
+>
+> do you think we may need to watch for oom kill / pod restarts during the run? for e.g. if pod restarts mid-capture then our evidence is contaminated
+>
+> also... i think we should also confirm that CPU stays under the limit (i.e. no CFS throttling) otherwise our thesis may have issues...
+
+### Claude (summary)
+
+Both confirmed + added to §6a (now 16 items).
+- **#4 (A) No CFS throttling** — verify `rate(container_cpu_cfs_throttled_seconds_total[1m])≈0` during the storm. Throttling injects latency (confounds the I/O story) AND zero-throttle is **positive evidence** CPU isn't the bottleneck. <70m (HPA trigger) is ~7× under the 500m limit so it should hold — but verify. (cadvisor scraped in M4-step2 → metric available.)
+- **#15 (D) No OOM/restarts mid-run** — a restart contaminates evidence (spurious replica change, restart-induced latency, cold cache). Watch mem working-set vs 256Mi; verify `RESTARTS=0` + no `OOMKilled` before trusting a run; bump mem limit if OOM under load.
+
+---

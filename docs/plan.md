@@ -234,6 +234,38 @@ surge a new pod up before removing an old one, so a rollout never dips below `PD
 
 ---
 
+## 6a. M5 evidence pitfalls (the trickiest milestone — a wrong setup produces a *misleading* demo)
+
+Build M5 against this checklist. Grouped by what each threatens.
+
+**A. Signal integrity — does the thesis actually hold?**
+1. **CPU-request ↔ I/O-bound load must align.** Measurable test: **CPU util (usage÷request) stays < 70%** under the storm, else the CPU-HPA *would* fire and the thesis inverts. Verify empirically.
+2. **Concurrency-bound, not throughput-bound.** The latency spike is requests **queueing on the PG pool while CPU idles on I/O wait**. Drive **high in-flight concurrency (many VUs)**, not just high RPS. High-concurrency + low-CPU + high-latency is the target shape (achievable *because* I/O-bound).
+3. **The PG pool is the bottleneck knob — and there's a cliff.** Pool = 10/pod; saturate it (queue → latency) **without mass-erroring**. `connectionTimeoutMillis: 3000` → a waiter >3s becomes a **500, not latency**. Narrow band: too little = no spike, too much = errors. May need to **raise the pool connection timeout** so p99 climbs to 2–3s cleanly. *(Prep: make pool timeout env-configurable.)*
+4. **No CFS throttling — CPU must stay under the LIMIT, not just the request.** Confirm `rate(container_cpu_cfs_throttled_seconds_total{namespace="iocheck"}[1m]) ≈ 0` during the storm. Two reasons: (a) throttling *itself* injects latency → would confound "latency is from I/O"; (b) **zero throttling is positive evidence** the app is never CPU-starved → it strengthens "CPU is not the bottleneck." Staying < 70m (the HPA trigger) is already ~7× under the 500m limit, so it should hold — but *verify it*, don't assume. (Operationalizes §O7.)
+
+**B. Load design (k6)**
+5. **Many DISTINCT unknown values** → cache misses → PG load (negative cache can't absorb them).
+6. **Uniqueness must outpace the negative-cache TTL (60s)** — repeats within the window become fast negative-hits and dilute the miss load. Use random-over-huge-space or a monotonic counter.
+7. **Keep-alive pinning (challenge #2 trap)** — too few connections pin to a couple of pods → skewed per-pod load → distorted signal + failed "pods share load". Use **many connections**; **verify even per-pod RPS** in Grafana.
+8. **Hold the spike long enough** — must outlast metrics-server (15s) + HPA sync and read convincingly (sustain ~2–3 min).
+9. **Run k6 in-cluster against the Service** (NOT port-forward → single-pod, bypasses LB), in its **own namespace** (avoid restricted-PSS friction), target the Service FQDN. NetworkPolicy already allows `:3000`.
+
+**C. Environment / measurement (laptop reality)**
+10. **Shared host CPU can confound everything.** k6 + app + PG + Redis + Prom + Grafana on one machine → too much load saturates the **host**, so "CPU low" turns ambiguous. Keep load **moderate — just enough to saturate the app pool**; give k6 its own resource budget; interpret CPU with host contention in mind. *(Biggest threat to a clean reading.)*
+11. **metrics-server 15s resolution + HPA smoothing** — HPA CPU% lags the real curve; the spike must clearly outlast it.
+
+**D. Faithful baseline + evidence**
+12. **Replicate the team's actual failed config** for the baseline: **CPU target 70%, min=2, max=8** — showing *their* setup not scaling, not a strawman.
+13. **Distinguish "CPU genuinely low" from "metrics broken."** Show the HPA reporting a **real CPU% (e.g. `18%/70%`)** but below threshold — never `<unknown>`.
+14. **Only ONE autoscaler at a time.** The M5 CPU-HPA and the M6 KEDA ScaledObject both target the same Deployment → two controllers fight. **Delete the CPU-HPA before applying KEDA.**
+15. **No OOM-kills / pod restarts mid-run — else the evidence is contaminated.** A restart during capture = a spurious replica change, restart-induced latency, and a cold cache polluting the numbers. Ensure the mem limit (256Mi) is adequate under load (watch `container_memory_working_set_bytes` vs limit); **verify `RESTARTS=0` + no `OOMKilled`** (`kubectl get pods`, `describe`) before trusting a run — re-run if any pod restarted.
+16. **Capture aligned, reproducible evidence** — CPU/RPS/p99/replicas over the *same* window + `kubectl get hpa`, driven by a **scripted run** (repeatable for the call); note run-to-run variance.
+
+**Synthesis (the call sentence):** *drive high concurrency of distinct cache-miss lookups → requests queue on the PG pool → p99 breaches 200ms while CPU stays < 70% of request → the team's own CPU-HPA (70%, min 2/max 8) sits at ~18%/70%, replicas pinned at 2. That's the proof CPU is the wrong signal.*
+
+---
+
 ## 7. The four challenges → where each is answered
 
 | # | Challenge | Where |

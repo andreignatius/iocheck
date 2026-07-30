@@ -156,9 +156,19 @@ Andre flagged the draft §4c query `sum(rate(...)) / count(kube_pod_info)` as a 
 - **Bonus fixes:** `kube_pod_info` doesn't exist (no kube-state-metrics in minimal stack); added `route="/lookup"` filter so probe/scrape traffic doesn't inflate the signal.
 - Rule for the call: *"query=aggregate, threshold=per-pod; KEDA divides. Pre-dividing double-normalizes and oscillates."* To be applied when we author the ScaledObject in M6.
 
+### 2026-07-30 20:55 — Plan: documented M5 evidence pitfalls (§6a) before building
+Andre asked to enumerate + document M5 pitfalls first (evidence-gathering is the trickiest part). Added **plan §6a — M5 evidence pitfalls** (14 items, 4 groups): A) signal integrity (CPU util <70%, concurrency-not-throughput bound, PG-pool cliff vs connectionTimeout); B) k6 load design (distinct values, uniqueness > neg-cache TTL, keep-alive pinning, hold spike, in-cluster own-ns); C) laptop host-CPU contention + metrics-server 15s lag; D) faithful baseline (replicate team's 70%/min2/max8), CPU-real-not-`<unknown>`, one-autoscaler-at-a-time, aligned reproducible capture. Andre's 3 (CPU-sizing, distinct-unknowns, hold-spike) confirmed + folded in. Two prep items added to carry-forward (pool-timeout env, delete CPU-HPA before KEDA).
+
+### 2026-07-30 21:04 — §6a extended: +2 M5 pitfalls (Andre)
+Andre added two more, both folded into plan §6a (now 16 items):
+- **#4 (group A) No CFS throttling** — confirm `rate(container_cpu_cfs_throttled_seconds_total[1m])≈0` during the storm. Throttling injects latency (confounds "latency is I/O") AND zero-throttle is *positive* evidence CPU isn't the bottleneck. <70m HPA trigger is ~7× under the 500m limit → should hold, but verify (cadvisor already scraped in M4-step2 → metric available; could add a dashboard panel in M5).
+- **#15 (group D) No OOM/pod restarts mid-run** — a restart contaminates evidence (spurious replica change, restart latency, cold cache). Watch mem working-set vs 256Mi limit; verify `RESTARTS=0` + no `OOMKilled` before trusting a run; may need to bump mem limit if OOM under load.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [ ] Wire audit log on `/ioc` (§S7) — currently only pino request logging.
 - [ ] Rate limiting (§S9) — deferred, decide build vs writeup.
-- [ ] M3 pt2: app image versioned tag (not `:latest`) + `imagePullPolicy: IfNotPresent` (concern #5).
+- [x] ~~M3 pt2: app image versioned tag + imagePullPolicy~~ (done in M3 pt2 / M4).
 - [ ] Writeup: pin Calico container images by digest + mirror for air-gap (concern #6).
+- [ ] **M5 prep:** make PG pool `connectionTimeoutMillis` env-configurable (pitfall §6a#3/#5) so p99 climbs cleanly instead of erroring under pool saturation.
+- [ ] **M5:** CPU-HPA (70%, min2/max8) is a throwaway — **delete before M6 KEDA** (pitfall §6a#13).
