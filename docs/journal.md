@@ -9,7 +9,7 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 
 - [x] **M1 — Service** (Express + zod + metrics + read-through cache + auth + graceful shutdown) — *2026-07-30*
 - [x] **M2 — Containerize** (Dockerfile, docker-compose: service + pg + redis) — *2026-07-30; runs end-to-end*
-- [~] **M3 — Cluster** (multi-node kind + Calico/Cilium; manifests: Deployment/Service/PDB/probes/limits + securityContext + Secrets + NetworkPolicy) — *cluster + Calico UP; manifests next*
+- [x] **M3 — Cluster** (multi-node kind + Calico; full manifests, deployed + verified) — *2026-07-30*
 - [ ] **M4 — Observability** (Prometheus scrape + Grafana dashboards + metrics-server + KEDA)
 - [ ] **M5 — Baseline evidence** (CPU-HPA + k6 spike → "CPU flat, no scale, p99 blows past 200ms" → challenge #1)
 - [ ] **M6 — Real autoscaler** (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
@@ -19,7 +19,7 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 
 ## Status vs deliverables (§8)
 
-- [~] Source + manifests + Dockerfile + Makefile — *source ✅ + Dockerfile ✅ + Makefile ✅ (started); k8s manifests pending (M3)*
+- [x] Source + manifests + Dockerfile + Makefile — *source ✅ + Dockerfile ✅ + k8s manifests ✅ + Makefile ✅*
 - [ ] README (reproduces setup from clean state)
 - [ ] Load-test tool (k6 script)
 - [ ] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture)
@@ -126,6 +126,13 @@ Andre flagged 2 supply-chain concerns; Claude found 4 more. Addressed:
 5. *(carry to M3 pt2)* app image must NOT be `:latest` → use a **versioned tag** + `imagePullPolicy: IfNotPresent`/`Never` (kind-loaded; `Always` would try a registry).
 6. *(writeup)* Calico's container images are pinned by **tag** not digest in the vendored manifest → full air-gap would pin-by-digest + mirror to a private registry.
 - **Recreated** the cluster from the pinned config + vendored Calico → **3 nodes Ready at v1.32.5**, skew resolved.
+
+### 2026-07-30 18:43 — Milestone 3 (part 2): manifests deployed + verified ✅
+Authored full k8s manifests and deployed to kind; **verified live** (evidence: `logs/M3-k8s.log`).
+- **Manifests** (`k8s/manifests/`): `00-namespace` (PSA=**restricted** §S4 + least-priv SA, no token automount); `10-config` (ConfigMap); `20-postgres` (StatefulSet+PVC, headless Svc, init.sh via ConfigMap, uid 70 rootless, exec probes); `30-redis` (Deployment+Svc, uid 999, readOnlyRootFS, emptyDir, auth'd exec probes); `40-iocheck` (Deployment replicas=2 + Svc: securityContext §S4 [nonroot/RO-rootfs/drop-ALL/seccomp], 3 probes [liveness=healthz process-only, readiness=readyz §O3], **preStop node-sleep** §O2, terminationGracePeriod 30, **topologySpread** §O5, **maxUnavailable:0/maxSurge:1** §O4, image `iocheck:0.1.0` + `imagePullPolicy: IfNotPresent` #5, envFrom config + secretKeyRef); `50-pdb` (minAvailable=2, loud §O4 annotation); `60-networkpolicy` (default-deny + DNS + iocheck→pg/redis egress + pg/redis ingress-from-iocheck-only + iocheck:3000 ingress §S5).
+- **Plumbing:** `k8s/secret.example.yaml` (template; real Secret via `make secret` from `.env`, never committed §S2); Makefile `secret`/`deploy`/`undeploy` + versioned `IMAGE=iocheck:0.1.0`.
+- **Live verification:** rollout 2/2; **iocheck pods spread across worker + worker2** (§O5); postgres/redis Running; **readyz db+cache true**; lookup + **normalized upsert** (`K8S-Evil.COM`→`k8s-evil.com`) work; **PDB ALLOWED DISRUPTIONS = 0** (zero eviction budget by design §O4, confirmed live); **NetworkPolicy segmentation PROVEN** — a non-iocheck busybox pod is **BLOCKED** from postgres:5432 and redis:6379 (§S5; Calico enforcing, kindnet wouldn't). All under restricted PSS.
+- Evidence: `logs/M3-k8s.log`; reusable `scripts/k8s-verify.sh`.
 
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.

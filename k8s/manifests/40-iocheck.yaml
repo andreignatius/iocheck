@@ -1,0 +1,109 @@
+# The iocheck service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: iocheck
+  namespace: iocheck
+  labels:
+    app: iocheck
+spec:
+  selector:
+    app: iocheck
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iocheck
+  namespace: iocheck
+  labels:
+    app: iocheck
+spec:
+  replicas: 2                       # shipped floor (§O4); prod would be 3 for drain headroom
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0             # surge a new pod up before removing an old one (§O4)
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: iocheck
+  template:
+    metadata:
+      labels:
+        app: iocheck
+    spec:
+      serviceAccountName: iocheck
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30      # covers preStop sleep + in-flight drain (§O2)
+      # Spread the pods across nodes so a node loss can't breach the PDB (§O5).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: iocheck
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532            # distroless 'nonroot'
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: iocheck
+          image: iocheck:0.1.0
+          imagePullPolicy: IfNotPresent     # kind-loaded image; never pull from a registry (#5)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true     # app writes nothing to disk (logs to stdout)
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: iocheck-config
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: iocheck-secrets, key: app-db-password }
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: iocheck-secrets, key: redis-password }
+            - name: IOC_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef: { name: iocheck-secrets, key: ioc-admin-api-key }
+          ports:
+            - name: http
+              containerPort: 3000
+          lifecycle:
+            preStop:
+              # Distroless has no shell/sleep -> use the bundled node to sleep ~5s.
+              # This runs to completion BEFORE SIGTERM, letting endpoint removal
+              # propagate while the app still serves (§O2).
+              exec:
+                command: ["/nodejs/bin/node", "-e", "setTimeout(()=>{}, 5000)"]
+          startupProbe:                       # allow a slow first start before liveness bites
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 1
+            failureThreshold: 30
+          livenessProbe:                      # process-only (§O3) — never restart on a dep blip
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:                     # PG hard / Redis soft (§O3)
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp                 # writable scratch (rootfs is read-only)
+      volumes:
+        - name: tmp
+          emptyDir: {}

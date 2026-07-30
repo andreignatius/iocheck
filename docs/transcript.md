@@ -411,3 +411,19 @@ Both valid (supply-chain / reproducible spin-up); found 4 more.
 **The 1.32 pin resolves 3 AND 4 together** (matches kubectl + within Calico support + mature). Recreated cluster (nothing deployed yet) from pinned config + vendored Calico → **3 nodes Ready at v1.32.5**, skew gone.
 
 ---
+
+## Turn 18 — 2026-07-30 18:43 +08
+
+### Andre (verbatim)
+
+> ok let's do M3 part 2
+
+### Claude (summary)
+
+Authored the full k8s manifest set, deployed to kind, **verified live** (`logs/M3-k8s.log`).
+
+**Manifests (`k8s/manifests/`):** namespace (PSA=restricted §S4 + least-priv SA); ConfigMap; Postgres (StatefulSet+PVC, headless Svc, init.sh via ConfigMap, uid-70 rootless, exec probes); Redis (Deployment+Svc, uid-999, RO-rootfs, auth'd exec probes); **iocheck Deployment+Svc** (securityContext §S4, 3 probes [liveness process-only, readyz §O3], preStop node-sleep §O2, terminationGracePeriod 30, topologySpread §O5, maxUnavailable:0/maxSurge:1 §O4, image `iocheck:0.1.0`+IfNotPresent #5, envFrom config+secretKeyRef); PDB (minAvailable=2, loud §O4 annotation); NetworkPolicy (default-deny + DNS + iocheck→pg/redis + pg/redis ingress-from-iocheck-only §S5). Plus `secret.example.yaml` (template; real Secret via `make secret` from `.env` §S2) and Makefile `secret`/`deploy`/`undeploy` + versioned image.
+
+**Live verification:** rollout 2/2; **pods spread across worker+worker2** (§O5); readyz db+cache true; lookup + normalized upsert (`K8S-Evil.COM`→`k8s-evil.com`) work; **PDB ALLOWED DISRUPTIONS=0** (§O4 confirmed live); **NetworkPolicy segmentation PROVEN** — non-iocheck busybox pod BLOCKED from postgres:5432 + redis:6379 (§S5, Calico enforcing). All under restricted PSS. Evidence `logs/M3-k8s.log`; reusable `scripts/k8s-verify.sh`. Journal: **M3 ✅**, deliverable "Source+manifests+Dockerfile+Makefile" ✅.
+
+---

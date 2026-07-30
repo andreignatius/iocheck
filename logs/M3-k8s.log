@@ -1,0 +1,42 @@
+# iocheck M3 — Kubernetes deploy verification
+# captured: 2026-07-30 18:43 +08
+# reproduce: make cluster-up && make calico && make deploy && ./scripts/k8s-verify.sh
+
+
+== nodes ==
+NAME                    STATUS   ROLES           AGE   VERSION
+iocheck-control-plane   Ready    control-plane   25m   v1.32.5
+iocheck-worker          Ready    <none>          25m   v1.32.5
+iocheck-worker2         Ready    <none>          25m   v1.32.5
+
+== pods (-o wide: iocheck should spread across nodes §O5) ==
+NAME                       READY   STATUS    RESTARTS   AGE     IP                NODE              NOMINATED NODE   READINESS GATES
+iocheck-78c58454c8-7f9rl   1/1     Running   0          3m26s   192.168.23.69     iocheck-worker2   <none>           <none>
+iocheck-78c58454c8-tpvd9   1/1     Running   0          3m26s   192.168.237.195   iocheck-worker    <none>           <none>
+postgres-0                 1/1     Running   0          3m27s   192.168.237.196   iocheck-worker    <none>           <none>
+redis-6679549cd-ct6lb      1/1     Running   0          3m27s   192.168.237.194   iocheck-worker    <none>           <none>
+
+== pdb (ALLOWED DISRUPTIONS 0 = zero eviction budget by design §O4) ==
+NAME      MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+iocheck   2               N/A               0                     3m26s
+
+== networkpolicies (§S5) ==
+NAME                            POD-SELECTOR   AGE
+allow-dns-egress                <none>         3m26s
+default-deny                    <none>         3m26s
+iocheck-egress-datastores       app=iocheck    3m25s
+iocheck-ingress                 app=iocheck    3m25s
+postgres-ingress-from-iocheck   app=postgres   3m25s
+redis-ingress-from-iocheck      app=redis      3m25s
+
+== functional check via port-forward ==
+healthz: {"status":"ok"}
+readyz:  {"status":"ready","db":true,"cache":true}
+lookup seeded IP: {"verdict":"malicious","ioc":{"type":"ip","value":"203.0.113.7","source":"seed-abuseipdb","score":90}}
+
+== NetworkPolicy segmentation: a NON-iocheck pod → datastores MUST be BLOCKED (§S5) ==
+./scripts/k8s-verify.sh: line 35: 20011 Terminated: 15          kubectl -n $NS port-forward svc/iocheck 8080:3000 > /tmp/pf_verify.log 2>&1
+postgres:5432 BLOCKED
+redis:6379 BLOCKED
+
+k8s verification complete.

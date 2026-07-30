@@ -1,0 +1,24 @@
+# Non-secret configuration (secrets live in the iocheck-secrets Secret, made by `make secret`).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iocheck-config
+  namespace: iocheck
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  LOG_LEVEL: "info"
+  BODY_LIMIT: "8kb"
+  # in-cluster service DNS names
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "iocheck"
+  POSTGRES_USER: "iocheck_app"      # app connects as the least-priv role (§S2)
+  PG_POOL_MAX: "10"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  CACHE_TTL_SECONDS: "300"
+  NEGATIVE_CACHE_TTL_SECONDS: "60"
+  SHUTDOWN_DRAIN_MS: "10000"
+  # consumed by the Postgres init container/script to CREATE the app role
+  APP_DB_USER: "iocheck_app"

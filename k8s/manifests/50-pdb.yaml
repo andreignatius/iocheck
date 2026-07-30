@@ -1,0 +1,18 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: iocheck
+  namespace: iocheck
+  annotations:
+    # DELIBERATE (§O4): minAvailable=2 with shipped replicas=2 is a ZERO *eviction*
+    # disruption budget. This is intentional — it matches the walkthrough's "return to
+    # 2" and the spec's minAvailable>=2, and is safe for the demo because HPA scale-down
+    # and rolling updates delete pods DIRECTLY (not via the eviction API), so only node
+    # drains / cluster-autoscaler are gated. In PRODUCTION we'd floor replicas at 3 for
+    # one pod of drain headroom. See docs/plan.md §O4 for the full reasoning.
+    iocheck.dev/min-available-note: "ship 2 to match spec/walkthrough; prod floors at 3 for drain headroom (plan §O4)"
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: iocheck

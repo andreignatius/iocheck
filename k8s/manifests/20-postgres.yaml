@@ -1,0 +1,96 @@
+# Postgres — the persistent store (hard dependency, §O3). StatefulSet + PVC for durable
+# state; init.sh (mounted from a ConfigMap) creates schema + least-priv role on first boot.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: iocheck
+spec:
+  clusterIP: None            # headless — StatefulSet stable identity
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: iocheck
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # restricted-PSS compliant: run as the alpine 'postgres' uid (70), non-root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70               # makes the PVC group-writable so initdb can run rootless
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: POSTGRES_USER            # superuser (distinct from the app role)
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: iocheck-secrets, key: postgres-super-password }
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef: { name: iocheck-config, key: POSTGRES_DB }
+            - name: APP_DB_USER
+              valueFrom:
+                configMapKeyRef: { name: iocheck-config, key: APP_DB_USER }
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: iocheck-secrets, key: app-db-password }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata   # subdir avoids the volume's lost+found
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # exec probes run in-container -> not subject to NetworkPolicy.
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "iocheck"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "iocheck"] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: init
+          configMap:
+            name: iocheck-pg-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
