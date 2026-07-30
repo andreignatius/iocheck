@@ -161,6 +161,46 @@
           "legendFormat": "in-flight"
         }
       ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Challenge #3 — KEDA concurrency scaling: replicas scale up as load rises → p99 recovers",
+      "description": "The M6 payoff (pair with the Challenge #1 panel). Under the same storm, KEDA scales replicas on in-flight concurrency and p99 recovers — the opposite of the CPU-HPA which stayed pinned at 2.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "p99 /lookup (s)" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "unit", "value": "s" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "replicas" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } },
+              { "id": "max", "value": 9 }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(up{job=\"iocheck\"} == 1)",
+          "legendFormat": "replicas"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/lookup\"}[1m])))",
+          "legendFormat": "p99 /lookup (s)"
+        }
+      ]
     }
   ]
 }

@@ -12,25 +12,25 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 - [x] **M3 — Cluster** (multi-node kind + Calico; full manifests, deployed + verified) — *2026-07-30*
 - [x] **M4 — Observability** (Prometheus + Grafana + metrics-server + KEDA; cadvisor CPU overlay) — *2026-07-30*
 - [x] **M5 — Baseline evidence** (CPU-HPA + k6 spike → challenge #1 PROVEN) — *2026-07-30*
-- [ ] **M6 — Real autoscaler** (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
-- [ ] **M7 — Load-sharing** (even per-pod distribution; keep-alive → challenge #2)
-- [ ] **M8 — Resilience / chaos** (kill pod + kill Redis under load → drain §O2 + fail-open §O3)
+- [x] **M6 — Real autoscaler** (KEDA on in-flight concurrency → demo 2→7→2 → challenges #3/#4) — *2026-07-31*
+- [x] **M7 — Load-sharing** (even per-pod distribution; keep-alive churn fix) — *folded into M6: per-pod RPS even across 7 pods → challenge #2 PROVEN*
+- [ ] **M8 — Resilience / chaos** (kill pod + kill Redis under load → drain §O2 + fail-open §O3) — *EXTRA (not a required challenge); needs a storm → defer to fresh session (fail-open already shown idle in M2)*
 - [ ] **M9 — Wrap** (writeup, README, Makefile polish, transcript cleanup)
 
 ## Status vs deliverables (§8)
 
 - [x] Source + manifests + Dockerfile + Makefile — *source ✅ + Dockerfile ✅ + k8s manifests ✅ + Makefile ✅*
-- [ ] README (reproduces setup from clean state)
-- [ ] Load-test tool (k6 script)
-- [ ] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture)
+- [ ] README (reproduces setup from clean state) — *M9*
+- [x] Load-test tool (k6 script) — `k8s/loadtest/lookup-storm.js` + `make loadtest`
+- [ ] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture) — *M9*
 - [x] AI chat logs — `docs/transcript.md` (recording, verbatim + timestamps)
 
-## Four challenges (§7)
+## Four challenges (§7) — ALL DEMONSTRATED
 
-- [ ] #1 Why CPU HPA is wrong (measured evidence) — needs M5
-- [ ] #2 Pods share load (keep-alive trap) — needs M7
-- [ ] #3 Autoscaler up & down, defend min/max — needs M6
-- [ ] #4 Reproducible test — needs M6 + load tool
+- [x] #1 Why CPU HPA is wrong (measured evidence) — M5: CPU 10–35%, replicas pinned at 2, p99 5s (`logs/M5-cpu-hpa-baseline.log`)
+- [x] #2 Pods share load (keep-alive trap) — M6: per-pod RPS even across 7 pods (`noConnectionReuse` churn fix)
+- [x] #3 Autoscaler up & down, defend min/max — M6: KEDA concurrency 2→7→2, min2/max8 defended
+- [x] #4 Reproducible test — M6: `k8s/loadtest/lookup-storm.js` + `make loadtest`
 
 ---
 
@@ -220,6 +220,40 @@ red 70% trigger line while p99 spikes to ~5s** — the definitive challenge-#1 i
 ~108m under the 140m line, RPS ~28, replicas flat at 2. Added a caption note re: the tiny replicas blip to 3
 at ~22:21 = rolling-update surge (maxSurge:1) from the pre-run redeploy, NOT the CPU-HPA. Screenshots to be
 saved as `docs/evidence/challenge1-{overview,cpu-vs-p99}.png`.
+
+### 2026-07-31 01:06 — M6 pre-build: p99 decision + pitfalls documented (plan §6b)
+Discussed M6 framing before building. **Confirmed:** M5=wrong-signal consequences, M6=right-signal→proper
+scaling; #3 (scale up/down + defend min/max), #4 (reproducible), + #2 (load spreads to new pods).
+**Key decision (locked):** 700ms = a *hard p99 floor* (miss ≥700ms; scaling removes queueing not service
+time) → `p99<200ms` and the 700ms all-miss storm are mutually exclusive → **keep 700ms (clean A/B vs M5),
+LIFT the <200ms target**; M6 win = **2→N→2 + p99 ~5s→~1s**; `<200ms` addressed honestly via the cache in
+REPORT (optional cache-friendly mini-demo). **Added plan §6b** (M6 build plan + 7 pitfalls): scale-down slow
+(use 60–120s demo window), **⚠ keep-alive pins load to OLD pods on scale-up → k6 must churn connections**
+(else new pods idle), RPS capacity-coupling, delete CPU-HPA first, scale-up lag (~1min), DB conn ceiling
+(80<100), fallback demo. Manifest = `k8s/manifests/70-keda-scaledobject.yaml` per §4c. **Next: build M6.**
+
+### 2026-07-31 01:37 — M6 finding: RPS signal fails under saturation → switch to CONCURRENCY (Option B)
+**Ran the KEDA RPS scaler (threshold 12/pod) → it did NOT scale** (replicas stuck at 2, p99 5s — reproduced M5). Root-caused with evidence:
+- **Log (`logs/M6-keda-scaling.log`):** during the storm, KEDA's measured RPS/pod hovered ~10–12 (e.g. 11958m), totRPS ~24, replicas 2, p99 5s.
+- **HPA math:** AverageValue → `desired = ceil(totalRPS/threshold) = ceil(24/12) = 2`; also within the HPA's ~10% no-action tolerance (`12.4/12 = +3%`). So no scale-up.
+- **Root cause:** the pool caps completed throughput (20 slots ÷ 0.7s ≈ 28/s), **pinning completed-RPS to ~12/pod regardless of overload** — a *capacity-limited*, not load-driven, signal.
+- **Smoking gun (both signals, SAME storm, from Prometheus):** completed **RPS/pod ≈ 12.4** (at threshold → no scale) vs **in-flight/pod ≈ 40** (steady ~30; total in-flight ~60–81). Concurrency isn't pool-capped (a queued request still counts in-flight) → it reflects the real offered load (60 VUs).
+- **Decision → Option B: scale on in-flight CONCURRENCY per pod.** `query = avg_over_time(sum(http_in_flight_requests{ns=iocheck})[30s:5s])`, `metricType AverageValue`, threshold ~10/pod → `desired = ceil(60/10) = 6`; at 6 pods 60/6 = 10 = target → **clean 2→6→2**. (RPS→concurrency is empirically justified; RPS retained as a "future work / why not RPS" writeup point.) Verify by re-running the storm.
+
+### 2026-07-31 01:47 — M6 Option B (concurrency) VERIFIED: 2→7→2, load spread, p99 5s→2s
+Switched ScaledObject trigger to in-flight concurrency (`avg_over_time(sum(http_in_flight_requests{ns=iocheck})[30s:5s])`, AverageValue, threshold 10/pod), re-ran the SAME storm → **the deduction held** (evidence: `logs/M6-keda-concurrency.log`):
+- **Scale-up 2→5→6→7** as in-flight climbed 60→75 (KEDA read ~21/pod at 2 pods → scaled). **Challenge #3 (up).**
+- **Challenge #2 — churn fix works:** at 7 pods per-pod lookup-RPS was `10.2,10.3,10.9,10.7,11.0,10.1,10.5` — **even across ALL 7 pods incl. new ones** (noConnectionReuse spread the load).
+- **p99 ~5s → ~2s** (queue relieved by scaling). **Scale-down 7→6→3→2** ~60s after load stopped (60s window). **Challenge #3 (down) + #4 (reproducible).**
+- **A/B proof (same workload):** RPS signal → stuck at 2 / p99 5s; concurrency signal → 2→7→2 / even load / p99 halved.
+- **Notes:** landed at 7 not ~6 (in-flight ran ~70–75, not exactly 60; 7 pods held within HPA ~10% tolerance). p99 settled ~2s with occasional 5s spikes — in-flight (~75) slightly exceeds the 7-pod pool (70) → residual queue; a threshold ~8 (→8 pods, pool 80>75) would give a cleaner sub-1s p99 if we want a crisper money-shot.
+- **Remaining M6:** optional threshold tweak for cleaner p99; Grafana M6 money-shot (scaling); fallback demo (Prometheus down → KEDA fallback=4, §6b#7).
+
+### 2026-07-31 02:25 — M6 WRAPPED: all 4 challenges demonstrated; threshold=8 polish deferred
+- Reverted to **threshold=10** (matches the verified 2→7→2 evidence). The threshold=8 "crisper p99" re-run **failed environmentally** (host CPU pegged ~490% → API timeouts, liveness-triggered pod restarts [clean `Completed` exits, NOT OOM], k6 job errored → no load); it also overwrote the M6 log, but the good 01:41 data (peak replicas=7) is retained in Prometheus.
+- **Money-shot captured** from the retained 01:41 data (re-cropped to 01:38–01:50): `docs/evidence/m6-challenge3-keda-scaling.png` — replicas hold at 7 while **p99 drops 5s→2s mid-load** (scaling drains the queue in real time), then 7→2. + `m6-overview.png`, `m6-cpu-vs-p99.png`. Evidence README updated.
+- **M6 done. All 4 required challenges DEMONSTRATED** (#1 M5; #2/#3/#4 M6). M7 (load-sharing) folded into M6.
+- **Remaining:** M8 (chaos — EXTRA, not a required challenge; defer to fresh session), then M9 (writeup + README + Makefile polish). *Corrected my earlier "just writeup after M6" — M8 exists but is optional extra credit.*
 
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.

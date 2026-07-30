@@ -12,6 +12,8 @@ its capture timestamp and a **reproduce** command. Regenerate any of them from a
 | [M3-k8s.log](./M3-k8s.log) | M3 | deployed to kind: pods **spread across nodes** (§O5), **PDB ALLOWED DISRUPTIONS=0** (§O4), functional endpoints, **NetworkPolicy segmentation** — non-iocheck pod BLOCKED from datastores (§S5) |
 | [M4-observability.log](./M4-observability.log) | M4 | metrics-server (`kubectl top`, iocheck idle ~13m), Prometheus scraping iocheck (targets UP), Grafana datasource+dashboard provisioned-as-code, KEDA healthy (external-metrics `Available=True`) |
 | [M5-cpu-hpa-baseline.log](./M5-cpu-hpa-baseline.log) | M5 | **challenge #1**: team's CPU-HPA (70%/2/8) under an I/O-bound storm — **CPU util 10–35%, replicas pinned at 2**, p99 breached to ~3–5s, k6 `p(99)<200` FAILED, 0 errors, throttle ~0, restarts 0 |
+| [M6-keda-scaling.log](./M6-keda-scaling.log) | M6 | the **RPS signal fails** run — completed-RPS is pool-capped at ~12/pod = threshold → KEDA holds at 2 (motivates the switch to concurrency) |
+| [M6-keda-concurrency.log](./M6-keda-concurrency.log) | M6 | **challenges #2/#3/#4**: KEDA on in-flight concurrency → **2→7→2**, load spread evenly across all pods, p99 ~5s→~2s |
 
 Scripts: [`scripts/smoke.sh`](../scripts/smoke.sh), [`scripts/resilience.sh`](../scripts/resilience.sh), [`scripts/k8s-verify.sh`](../scripts/k8s-verify.sh).
 (k6 load-test evidence — the challenge-#1 "CPU flat while RPS/p99 spike" run — lands here at M5/M6.)

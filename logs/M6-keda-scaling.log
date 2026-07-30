@@ -1,0 +1,33 @@
+# iocheck M6 — KEDA RPS-per-pod autoscaling (challenges #2/#3/#4)
+# captured: 2026-07-31 01:12 +08   config: STORE_LOOKUP_LATENCY_MS=700, PEAK_VUS=60, KEDA threshold=12 RPS/pod, min2/max8
+# reproduce: kubectl apply -f k8s/manifests/70-keda-scaledobject.yaml && make loadtest
+
+TIME      REPS   KEDA(rps/12)   p99(s)   totRPS    per-pod-lookup-RPS    
+01:12:52  2      0              -        0.0       0.0,0.0               
+01:13:07  2      0              1.697    3.641     0.8,0.8               
+01:13:23  2      828m           1.583    6.68      1.8,1.6               
+01:13:38  2      1727m          2.308    16.604    5.2,4.5               
+01:13:54  2      4864m          5.0      24.662    8.0,7.4               
+01:14:09  2      7725m          5.0      21.56     10.2,9.7              
+01:14:25  2      9947m          4.959    24.8      11.7,12.6             
+01:14:40  2      12136m         5.0      18.874    10.2,10.7             
+01:14:55  2      10417m         5.0      18.059    10.3,11.3             
+01:15:11  2      10800m         5.0      21.279    10.1,10.7             
+01:15:26  2      10469m         5.0      22.24     10.9,10.5             
+01:15:42  2      11027m         5.0      22.89     11.2,10.9             
+01:15:57  2      11674m         5.0      23.736    11.7,10.9             
+01:16:13  2      11958m         4.95     24.721    12.1,11.8             
+01:16:30  2      11590m         5.0      19.479    12.4,9.8              
+01:16:45  2      8428m          1.937    4.544     7.5,6.9               
+01:17:04  2      5101m          -        0.0       4.6,2.3               
+01:17:20  2      2063m          -        0.0       1.1,0.2               
+01:17:35  2      0              -        0.0       0.0,0.0               
+01:17:50  2      0              -        0.0       0.0,0.0               
+01:18:06  2      0              -        0.0       0.0,0.0               
+01:18:22  2      0              -        0.0       0.0,0.0               
+
+final replicas + HPA (after scale-down window):
+NAME               REFERENCE            TARGETS      MINPODS   MAXPODS   REPLICAS   AGE
+keda-hpa-iocheck   Deployment/iocheck   0/12 (avg)   2         8         2          8m58s
+iocheck-74b47465f7-48rt6   0     iocheck-worker
+iocheck-74b47465f7-msvn8   0     iocheck-worker

@@ -732,3 +732,154 @@ Screenshots surfaced a **dashboard accuracy bug**: the CPU panels still assumed 
 First re-capture still showed stale panels (title "70% of 100…", CPU crossing 70%) — cause: Grafana's 5s auto-refresh reloads query *data*, not the dashboard *model*; needed a hard refresh (⌘⇧R). Second re-capture correct: CPU% ~50%, titles right. Then pinned axes (money-shot 0–100%, per-pod 0–160m) so the **70% / 140m threshold lines are in-frame**; redeployed → final capture: **CPU% peaks ~54% clearly UNDER the red 70% line while p99 spikes ~5s** — the definitive challenge-#1 money-shot. Added caption note (replicas blip to 3 @22:21 = rolling-update surge, not the HPA). Evidence README done; PNGs → `docs/evidence/`. **M5 fully closed.**
 
 ---
+
+## Turn 36 — 2026-07-30 (pre-commit; time approx)
+
+### Andre (verbatim)
+
+> saved the pngs in docs/evidence/ ... can double cfm if all is good? then i'll commit all this
+
+### Claude (summary)
+
+Pre-commit sweep. ✅ PNGs present (names match caption doc); `.env` **never committed** (real DB passwords `iocheck_dev_pw`/`super_dev_pw` clean in history); `.env.example`/`secret.example.yaml` placeholders only; no stray `dist/`. ⚠ Found one committed dev key `dev_admin_key_do_not_use_in_prod` in `scripts/smoke.sh` → fixed (now sources `.env`); flagged the value is still in git *history* (low-risk dev placeholder — leave, or squash for a pristine history; Andre's call). Action for Andre: `git add docs/evidence/ scripts/smoke.sh` + the working-tree edits. Verdict: safe to commit.
+
+---
+
+## Turn 37 — 2026-07-31 (M6 framing; time approx)
+
+### Andre (verbatim)
+
+> before we start, can we confirm a few things first?
+>
+> to my unds, while M5 showed consequences of listening to wrong signal, M6 shows how listening to the right signal can lead to proper scaling.
+>
+> as per journal, we M6 is the payoff where we build the right autoscaler (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
+> #3 is scale up and down, defend min/max
+> #4 is reproducible test
+>
+> kindly confirm if accurate
+>
+> also, re the choices we made in M5 for the 700ms latency and p99<200ms conditions, can we discuss which to lift for M6?
+>
+> let's also try to take stock of any pitfalls / conditions we need to be aware of while building M6... for e.g. scale-down will be. deliberately slow i.e. "return to 2" wont be instant after we stop load. anything else we should be aware of?
+
+### Claude (summary)
+
+Confirmed the framing (M5 = wrong-signal consequences, M6 = right-signal → proper scaling; #3 scale up/down + defend min/max, #4 reproducible, + noted **#2 pods-share-load** also exercised on scale-up). **p99 tension:** 700ms is a **hard p99 floor** (every miss ≥700ms; scaling removes *queueing*, not service time) → mutually exclusive with `<200ms` → recommended **keep 700ms (clean A/B vs M5), lift the `<200ms` target**; M6 win = 2→N→2 + p99 ~5s→~1s; `<200ms` met honestly via the **cache** (REPORT). **Pitfalls listed:** scale-down deliberately slow (use 60–120s demo window); ⚠ **keep-alive pins load to OLD pods on scale-up** → k6 must churn connections (else new pods idle); RPS **capacity-coupling**; delete CPU-HPA first; scale-up lag (~1 min); DB conn ceiling (80<100); fallback demo. Asked Andre to confirm the p99 decision.
+
+---
+
+## Turn 38 — 2026-07-31 01:06 +08
+
+### Andre (verbatim)
+
+> re
+> "Confirm the p99 decision (keep 700ms + lift the <200ms target for the A/B) and I'll fold these pitfalls into the plan, then build M6."
+> ^ agree...
+>
+> and ofc we build the manifests/70-keda-scaledobject.yaml referencing ### 4c. KEDA ScaledObject (shape) from plan right? didn't see it in your msg earlier
+>
+> let's log all this into the plan (and transcript) now? then after that we build M6 next?
+
+### Claude (summary)
+
+Confirmed: ScaledObject = `k8s/manifests/70-keda-scaledobject.yaml` per §4c. **Logged everything** — plan **§6b** (M6 build plan + p99 decision + 7 pitfalls), journal, transcript. Then **built M6**: k6 churn fix (`noConnectionReuse` + 150s hold), authored the ScaledObject (metricType AverageValue, TOTAL `route="/lookup"` RPS query, threshold 12/pod, min2/max8, fallback, scaleDown 60s, pollingInterval 10s); deleted the CPU-HPA; applied → **ScaledObject READY=True**, KEDA reads the metric (`364m/12 avg`). Ran the storm → **KEDA did NOT scale (stuck at 2, p99 5s — reproduced M5)**: completed-RPS is capacity-coupled — the 2-pod pool caps throughput to ~24 total = ~12/pod = exactly the threshold, so KEDA sees "at target." Presented **Option A** (lower RPS threshold → overshoots to max 8) vs **Option B** (scale on in-flight **concurrency**/pod → clean 2→6→2, the leading signal for a saturated I/O service) — recommended B; awaiting Andre's signal choice. Evidence: `logs/M6-keda-scaling.log`.
+
+---
+
+## Turn 39 — 2026-07-31 01:37 +08
+
+### Andre (verbatim)
+
+> hmmm... can you lay out with me the findings / log files and what you did to deduce to choose option B? i wish to double confirm and verify the relevant sources and deduction steps
+
+### Claude (summary)
+
+Laid out the full deduction from sources: (1) `logs/M6-keda-scaling.log` — replicas stuck at 2, KEDA RPS/pod ~10–12, p99 5s; (2) HPA AverageValue math → `ceil(24/12)=2` + ~10% tolerance → no scale; (3) root cause — pool caps throughput (20 slots ÷ 0.7s ≈ 28/s) so completed-RPS is *pinned* to ~12/pod. **Smoking gun (queried both signals from the SAME storm):** completed **RPS/pod ≈ 12.4** vs **in-flight/pod ≈ 40** — concurrency isn't pool-capped, reflects the real 60-VU offered load. Concluded B (concurrency, threshold ~10 → clean 2→6→2). Offered to *prove* it empirically by running the concurrency version.
+
+---
+
+## Turn 40 — 2026-07-31 01:37 +08
+
+### Andre (verbatim)
+
+> can we log this discussion in the journal and then proceed with option B?
+
+### Claude (summary)
+
+Logged the RPS-fails → concurrency finding + decision to journal. Implemented Option B: ScaledObject trigger switched to `avg_over_time(sum(http_in_flight_requests{ns=iocheck})[30s:5s])`, AverageValue, threshold 10/pod; plan §6b + §4c-note updated. **Re-ran the storm → VERIFIED** (`logs/M6-keda-concurrency.log`): **2→5→6→7→…→3→2** on concurrency; per-pod RPS even across all 7 pods (`10.2,10.3,10.9,10.7,11.0,10.1,10.5` — churn fix works, challenge #2); p99 **~5s→~2s**; scale-down ~60s after load stopped. A/B proof: RPS→stuck-at-2 vs concurrency→2→7→2. Notes: landed 7 (in-flight ~75 not 60); residual ~2s p99 (in-flight slightly > 7-pod pool) — threshold~8 would give cleaner sub-1s. Challenges #2/#3/#4 demonstrated.
+
+---
+
+## Turn 41 — 2026-07-31 ~01:52 +08
+
+### Andre (verbatim)
+
+> great thanks! can we do both (a) do the threshold tweak (for a cleaner p99 drop) + capture the clean M6 money-shot, (b) run fallback demo (to answer "what if the autoscaler's data source is down") next? then we log everything and wrap up M6 after?
+
+### Claude (summary)
+
+Started (a): threshold 10→8 + added the M6 "Challenge #3" dashboard panel (replicas vs p99) + ran the storm — **failed environmentally** (host CPU ~490% → API timeouts, liveness-triggered pod restarts [`Completed`, not OOM], k6 job errored → no load). Diagnosed the cluster.
+
+---
+
+## Turn 42 — 2026-07-31 ~02:05 +08
+
+### Andre (verbatim)
+
+> sure let's accept threshold=10 ... re the fallback demo is not a must right for M6?
+>
+> re Screenshot the M6 money-shot from the retained 01:41 data (2→7→2 + p99 recovery).
+> can you show me the steps to do it?
+
+### Claude (summary)
+
+**Fallback = not a required challenge** (it's the writeup's "data-source-down" question; answerable by the `fallback: replicas 4` config already built — live demo optional). Reverted to **threshold=10** (matches evidence); confirmed the 01:41 data is retained in Prometheus (peak replicas=7). Gave screenshot steps: time picker → Absolute **01:38–01:50** to isolate the clean 2→7→2 hump.
+
+---
+
+## Turn 43 — 2026-07-31 ~02:10 +08
+
+### Andre (verbatim)
+
+> how about these 3 screenshots?
+>
+> [3 screenshots on "Last 1 hour": overview 4-panel / Challenge #1 panel + in-flight / Challenge #3 panel]
+
+### Claude (summary)
+
+#3 (Challenge #3) is the money-shot, but on "Last 1h" it includes the failed-01:59-run's replica notches (dips to 1 = pod restarts). Re-crop to **01:38–01:50** to isolate the clean hump. #1 overview = good supporting; #2 redundant.
+
+---
+
+## Turn 44 — 2026-07-31 ~02:18 +08
+
+### Andre (verbatim)
+
+> how about these screenshots?
+>
+> [screenshots re-cropped to 01:38–01:50]
+
+### Claude (summary)
+
+Pristine now. The money-shot shows **p99 dropping 5s→2s WHILE replicas hold at 7 and load is still high** — the added pods drain the queue in real time (not just load ending). Save `m6-challenge3-keda-scaling.png` + `m6-overview.png`; #2 optional.
+
+---
+
+## Turn 45 — 2026-07-31 02:25 +08
+
+### Andre (verbatim)
+
+> added the screenshots in docs/evidence/ kindly confirm
+>
+> then can we log everything and wrap up M6 ?
+>
+> btw don't we have to do M7 and M8 before the write up? (or did i misunderstand you?)
+
+### Claude (summary)
+
+Confirmed all 5 evidence PNGs; fixed caption filenames. **Wrapped M6.** M7/M8 correction (Andre right, I'd glossed over it): **M7 (load-sharing / #2) already done in M6** (even per-pod RPS across 7 pods); **M8 (chaos) is EXTRA** — not a required challenge; deferred to a fresh session (idle fail-open already shown in M2). **All 4 required challenges DEMONSTRATED.** Remaining: M8 (optional), M9 (writeup/README/Makefile).
+
+---
+
+---

@@ -1,0 +1,46 @@
+# The RIGHT autoscaler (M6) — scales on in-flight CONCURRENCY per pod.
+# Requires KEDA installed (make keda / make observability) and the CPU-HPA DELETED first
+# (two controllers on one Deployment would fight — plan §6a#14 / §6b#4).
+#
+# WHY concurrency, not RPS (empirically established — logs/M6-keda-scaling.log, journal 2026-07-31):
+# completed-RPS is CAPACITY-COUPLED — the pool caps throughput (20 slots / 0.7s ~= 28/s), pinning
+# RPS to ~12/pod = our threshold, so a CPU-style "at target" reading holds replicas at 2 even at
+# p99=5s. On the SAME storm, in-flight/pod was ~40 while RPS/pod was ~12: concurrency reflects the
+# OFFERED load (queued requests still count as in-flight) and is NOT pool-suppressed, so it fires.
+#
+# Scaling math (plan §4c): metricType AverageValue => desiredReplicas = ceil(query / threshold).
+# query = TOTAL in-flight; threshold = PER-POD target. Do NOT divide by pod count (double-normalizes).
+# ~60 in-flight / 10 = 6 pods; at 6 pods 60/6 = 10 = target => stable. Clean 2->6->2.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: iocheck
+  namespace: iocheck
+spec:
+  scaleTargetRef:
+    name: iocheck
+  minReplicaCount: 2            # ship 2 (matches spec/walkthrough; prod-floor 3 story is §O4)
+  maxReplicaCount: 8            # 8 x pool 10 = 80 conns < Postgres 100 (§O8 downstream ceiling)
+  pollingInterval: 10          # tighten scale-up reaction vs the 30s default (§6b#5)
+  cooldownPeriod: 60
+  fallback:                    # if Prometheus (the metric source) is unreachable (§6b#7 / §4c)
+    failureThreshold: 3
+    replicas: 4                # hold a safe middle count rather than collapse to min
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0     # react fast to the storm
+        scaleDown:
+          stabilizationWindowSeconds: 60    # DEMO: 60s so "return to 2" is watchable
+                                            # (prod would use ~300s to avoid flapping — §6b#1)
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # In-flight concurrency (offered load), smoothed over 30s to de-jitter the gauge.
+        query: avg_over_time(sum(http_in_flight_requests{namespace="iocheck"})[30s:5s])
+        threshold: "10"        # per-pod concurrency target: ~60-75 in-flight -> ~6-7 pods (verified 2->7->2,
+                               # logs/M6-keda-concurrency.log). Tuning knob: ~8 pushes to 8 pods (pool 80 >
+                               # in-flight) for a crisper sub-1s p99; we ship 10, which cleanly scales & holds.

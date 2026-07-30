@@ -8,6 +8,10 @@ const PEAK = Number(__ENV.PEAK_VUS || 60);
 // Concurrency-bound storm: ramp VUs (in-flight concurrency), NOT arrival rate, so requests
 // queue on the Postgres pool while CPU idles on I/O wait (§6a#2).
 export const options = {
+  // Churn connections (no keep-alive reuse) so every request re-picks a pod via the Service —
+  // otherwise, when KEDA scales up, existing pinned connections keep all load on the OLD pods and
+  // the new pods sit idle (the keep-alive trap, worse on scale-up — plan §6b#2 / challenge #2).
+  noConnectionReuse: true,
   scenarios: {
     storm: {
       executor: 'ramping-vus',
@@ -15,8 +19,8 @@ export const options = {
       stages: [
         { duration: '30s', target: 5 },     // baseline
         { duration: '15s', target: PEAK },  // alert-storm spike (~12x)
-        { duration: '90s', target: PEAK },  // HOLD the spike (outlast metrics-server 15s + HPA sync, §6a#8)
-        { duration: '20s', target: 5 },     // ramp down
+        { duration: '150s', target: PEAK }, // HOLD — long enough for scale-up lag (~1m) + scaled steady state (§6b#5)
+        { duration: '20s', target: 5 },     // ramp down (then watch KEDA scale back to 2)
       ],
       gracefulRampDown: '10s',
     },

@@ -266,6 +266,47 @@ Build M5 against this checklist. Grouped by what each threatens.
 
 ---
 
+## 6b. M6 build plan & pitfalls (KEDA — the resolution)
+
+**Goal:** replace the CPU-HPA with a KEDA RPS-per-pod ScaledObject; re-run the SAME storm; show it
+**scale 2→N→2** (challenges #3/#4) and load spread to the *new* pods (#2).
+
+**p99 vs the 700ms floor — DECISION (locked):** the 700ms modeled store latency is a **hard p99 floor**
+(every miss ≥700ms; scaling removes *queueing*, never the service time). So `p99<200ms` and the 700ms
+all-miss storm are **mutually exclusive**. **Keep 700ms** (fixed service property; identical to M5 → clean
+A/B) and **LIFT the `<200ms` *target*** for the storm demo. **M6 success = scales 2→N→2 + p99 collapses
+~5s→~1s** (queueing removed), *not* <200ms. The `<200ms` SLO is met honestly by the **cache** (hits <200ms;
+700ms is the cold-upstream floor caching exists to avoid; the all-miss storm is a deliberate worst case) —
+state this in REPORT; optional cache-friendly mini-demo to tick the box explicitly.
+
+**Manifest:** `k8s/manifests/70-keda-scaledobject.yaml` (metricType AverageValue, `serverAddress` = prometheus
+svc, min 2 / max 8, `fallback`, scale-down window). Requires KEDA installed first (`make observability`/`make keda`).
+> **Signal — RPS → CONCURRENCY (empirical, 2026-07-31).** Built RPS-per-pod per §4c first; **it did not
+> scale** (`logs/M6-keda-scaling.log`): completed-RPS is capacity-coupled — the pool pins it to ~12/pod =
+> the threshold, so KEDA reads "at target" and holds at 2 even at p99=5s. Same storm: in-flight/pod ~40 vs
+> RPS/pod ~12. **Switched the trigger to in-flight concurrency** `avg_over_time(sum(http_in_flight_requests
+> {namespace="iocheck"})[30s:5s])`, threshold ~10/pod → clean 2→6→2. RPS kept as a "why not RPS" writeup point.
+
+**Pitfalls / conditions:**
+1. **Scale-down is deliberately slow** — `scaleDown stabilizationWindowSeconds` (+ KEDA cooldown) delays
+   "return to 2" ~5 min. Use **~60–120s for the demo** (note prod uses longer to prevent flapping).
+2. **⚠ Keep-alive pins load to the OLD pods on scale-up** — kube-proxy doesn't rebalance *existing*
+   connections → **new pods get zero traffic** → p99 doesn't improve, scale-up looks pointless (the
+   challenge-#2 trap, worse here). **Fix: k6 must churn connections** (bounded connection lifetime /
+   periodic reconnect). Must-do or the demo fails.
+3. **RPS is capacity-coupled** — completed-RPS is pool-suppressed at low replicas and *rises* as pods are
+   added → the scaler chases equilibrium / may run to max. Calibrate threshold; writeup note (in-flight
+   concurrency is a purer leading signal — future work).
+4. **Delete the CPU-HPA first** (§6a#14) — two controllers on one Deployment fight.
+5. **Scale-up reaction lag** — KEDA poll (30s default) + HPA sync + schedule + startup-probe readiness
+   (~30s) ≈ ~1 min → storm onset breaches before scaling helps (§O1, expected/honest). Lower
+   `pollingInterval` (~10–15s) to tighten.
+6. **DB connection ceiling at max** — 8 pods × pool 10 = 80 < PG 100 (§O8). Safe; don't raise max without PgBouncer.
+7. **Fallback demo** — the "autoscaler data source down" deliverable: stop Prometheus → KEDA `fallback`
+   holds a safe replica count. Quick capture.
+
+---
+
 ## 7. The four challenges → where each is answered
 
 | # | Challenge | Where |

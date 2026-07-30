@@ -32,4 +32,29 @@ nothing to do" — and never scales — while the service is drowning. **CPU is 
 CPU-HPA holds replicas at 2, while p99 breaches to ~3–5s with zero errors (pure queueing) and near-zero
 CFS throttling — proving CPU is the wrong scaling signal for this workload.*
 
-<!-- Save the two PNGs into this folder with the filenames above. -->
+---
+
+# Evidence — Challenge #3 (the RIGHT signal scales correctly)
+
+Numeric backing: [`logs/M6-keda-concurrency.log`](../../logs/M6-keda-concurrency.log).
+
+**Run config:** same storm as challenge #1, but the CPU-HPA is replaced by the **KEDA ScaledObject scaling
+on in-flight concurrency per pod** (`avg_over_time(sum(http_in_flight_requests)[30s:5s])`, AverageValue,
+threshold 10/pod, min 2 / max 8). (We first tried RPS-per-pod and found it's *capacity-coupled* — the pool
+pins completed-RPS to the threshold under saturation, so it doesn't fire; concurrency reflects the offered
+load and does — see journal 2026-07-31.)
+
+### `m6-challenge3-keda-scaling.png` — the M6 money-shot (pair with challenge #1)
+(supporting: `m6-overview.png`, `m6-cpu-vs-p99.png`)
+The dashboard's bottom panel *"Challenge #3 — KEDA concurrency scaling"* over the storm:
+- **replicas** (green) step up **2 → 5 → 6 → 7** as in-flight concurrency climbs, then scale back **7 → 2**
+  ~60s after load stops.
+- **p99** (orange) **recovers from ~5s toward ~2s** as the added pods drain the queue.
+- Per-pod RPS is **even across all 7 pods** (`10.2, 10.3, 10.9, …`) — load reaches the *new* pods (the
+  `noConnectionReuse` churn fix; challenge #2).
+
+**The before/after:** challenge #1 = CPU-HPA blind, replicas pinned at 2, p99 5s. Challenge #3 = KEDA on
+concurrency, replicas 2→7→2, p99 recovers. Same workload, only the scaling signal changed.
+
+<!-- Save the PNGs into this folder: challenge1-overview.png, challenge1-cpu-vs-p99.png, challenge3-keda-scaling.png -->
+

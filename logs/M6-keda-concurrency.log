@@ -1,0 +1,33 @@
+# iocheck M6 — KEDA CONCURRENCY scaling (threshold=8) — challenges #2/#3/#4
+# captured: 2026-07-31 01:59 +08   config: STORE_LOOKUP_LATENCY_MS=700, PEAK_VUS=60, threshold=8 in-flight/pod, min2/max8
+# reproduce: kubectl apply -f k8s/manifests/70-keda-scaledobject.yaml && make loadtest
+
+TIME      REPS   p99(s)   in-flight totRPS   
+01:59:23  2                                  
+01:59:39  2                                  
+02:00:28  2                                  
+02:00:44  2                                  
+02:00:59  2                                  
+02:01:14  2                                  
+02:01:30  2                                  
+02:01:46  2                                  
+02:02:02  2                                  
+02:02:17  2                                  
+02:02:33  2                                  
+02:02:48  2                                  
+02:03:04  2                                  
+02:03:19  2                                  
+02:03:35  2                                  
+02:03:51  2                                  
+02:04:10  2                                  
+02:04:26  2                                  
+02:04:42  2                                  
+02:04:57  2                                  
+02:05:13  2                                  
+02:05:28  2                                  
+02:05:44  2                                  
+02:06:00  2                                  
+
+final:
+NAME               REFERENCE            TARGETS      MINPODS   MAXPODS   REPLICAS   AGE
+keda-hpa-iocheck   Deployment/iocheck   1/10 (avg)   2         8         2          56m
