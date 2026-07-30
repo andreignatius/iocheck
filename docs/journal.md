@@ -8,8 +8,8 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 ## Status vs plan build sequence (§9)
 
 - [x] **M1 — Service** (Express + zod + metrics + read-through cache + auth + graceful shutdown) — *2026-07-30*
-- [ ] **M2 — Containerize** (Dockerfile, docker-compose: service + pg + redis)
-- [ ] **M3 — Cluster** (multi-node kind + Calico/Cilium; manifests: Deployment/Service/PDB/probes/limits + securityContext + Secrets + NetworkPolicy)
+- [x] **M2 — Containerize** (Dockerfile, docker-compose: service + pg + redis) — *2026-07-30; runs end-to-end*
+- [~] **M3 — Cluster** (multi-node kind + Calico/Cilium; manifests: Deployment/Service/PDB/probes/limits + securityContext + Secrets + NetworkPolicy) — *cluster + Calico UP; manifests next*
 - [ ] **M4 — Observability** (Prometheus scrape + Grafana dashboards + metrics-server + KEDA)
 - [ ] **M5 — Baseline evidence** (CPU-HPA + k6 spike → "CPU flat, no scale, p99 blows past 200ms" → challenge #1)
 - [ ] **M6 — Real autoscaler** (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
@@ -19,7 +19,7 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 
 ## Status vs deliverables (§8)
 
-- [~] Source + manifests + Dockerfile + Makefile — *source done; manifests/Dockerfile/Makefile pending (M2/M3)*
+- [~] Source + manifests + Dockerfile + Makefile — *source ✅ + Dockerfile ✅ + Makefile ✅ (started); k8s manifests pending (M3)*
 - [ ] README (reproduces setup from clean state)
 - [ ] Load-test tool (k6 script)
 - [ ] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture)
@@ -91,7 +91,45 @@ Andre reviewed M1 and raised 5 concerns (all valid); Claude found 2 more. All fi
 
 Files touched: `db/init.sh` (new, +x), removed `db/init.sql`, `.env`/`.env.example`, `package.json` (+ipaddr.js), `src/validation.ts`, `src/cache.ts`, `src/app.ts`, `src/index.ts`, `src/validation.test.ts`.
 
+### 2026-07-30 17:16 — Milestone 2: Containerize ✅ (runs end-to-end)
+Built the stack and **verified live** (Docker 28, compose).
+- **`Dockerfile`** — multi-stage: `node:20-alpine` builder (tsc build + `npm prune --omit=dev`) → **distroless** `nodejs20-debian12:nonroot` runtime (no shell/pkg-mgr, uid 65532, §S4). Image **209MB**.
+- **`docker-compose.yml`** — service + `postgres:16-alpine` + `redis:7-alpine`; secrets from `.env` via `${VAR:?}`; `init.sh` mounted to `docker-entrypoint-initdb.d`; app connects as least-priv role; superuser distinct; healthchecks (pg_isready / redis-cli PONG / node HTTP for distroless); `depends_on: condition: service_healthy`.
+- **`.dockerignore`** (keeps `.env`/docs/db out of image), **`Makefile`** (help/up/down/logs/ps/smoke/clean), **`scripts/smoke.sh`**.
+- Added `POSTGRES_SUPER_PASSWORD` to env files.
+
+**Live verification (all green):**
+- Stack: postgres/redis/iocheck all **healthy**; service logs "redis ready" + "listening".
+- Smoke: seeded malicious IP → malicious; unknown → unknown; **upsert `Evil.COM` → stored `evil.com`** (normalization); lookup `evil.com` → malicious; **IPv6: upsert `::1`, lookup `0:0:0:0:0:0:0:1` → malicious** (canonicalization); no-key → **401**; bad sha256 → **400**; metrics show **type/verdict labels, no IOC value**.
+- Resilience: oversized body → **413**; **Redis stopped → lookup still served from Postgres** (fail-open), **readyz stays 200 with `cache:false`** (Redis is soft, not a SPOF), `cache_up=0`; **Redis restarted → background reconnect → `cache_up=1`, readyz cache:true** (§O3 proven live).
+
+*Note: stack left running; `make down` to stop, `make clean` to also drop the pgdata volume (smoke left `::1`/`evil.com` rows).*
+
+**Evidence saved** (committed under `logs/`, indexed in [logs/README.md](../logs/README.md)):
+`M1-unit-tests.log`, `M2-stack.log`, `M2-smoke.log`, `M2-resilience.log` — each with a capture timestamp
++ reproduce command. Reusable scripts: `scripts/smoke.sh`, `scripts/resilience.sh`. `.gitignore` adjusted
+so `logs/` is tracked (evidence) while stray root `*.log` stays ignored.
+
+### 2026-07-30 17:49 — Milestone 3 (part 1): cluster foundation ✅
+- Tooling: installed **kind v0.32.0** + **helm v4.2.3** via brew (kubectl v1.32.2 already present).
+- **`k8s/kind-config.yaml`** — 3-node cluster (1 control-plane + 2 workers) with **`disableDefaultCNI: true`** + podSubnet 192.168.0.0/16, so we run **Calico** instead of kindnet (kindnet doesn't enforce NetworkPolicy §S5).
+- **Makefile** k8s targets: `cluster-up`, `calico`, `k8s-image`, `kind-load`, `cluster-status`, `cluster-down`.
+- Created cluster (k8s **v1.36.1**); nodes NotReady until CNI. Installed **Calico v3.28.2** → `calico-node` 3/3 Running → **all 3 nodes Ready**. NetworkPolicy enforcement now active.
+- **Next (M3 part 2):** author + apply manifests — namespace, ConfigMap, Secret, Postgres (StatefulSet+PVC, init via ConfigMap), Redis, iocheck Deployment (probes / securityContext §S4 / resources / preStop §O2 / topology spread §O5 / SA), Service, PDB(minAvailable=2 annotated §O4), NetworkPolicy default-deny + allow-list §S5; then `kind-load` the image and verify readyz gating.
+
+### 2026-07-30 18:21 — M3 cluster hardening (Andre review) → pin + vendor + version-align
+Andre flagged 2 supply-chain concerns; Claude found 4 more. Addressed:
+1. **Pin node image** ✅ — `kind-config.yaml` now pins `kindest/node:v1.32.5@sha256:e3b2327e…` (manifest-**list** digest, arm64-safe — caught that the first `docker manifest inspect` digest was a per-platform sub-manifest, not the list).
+2. **Vendor Calico** ✅ — saved `k8s/calico-v3.28.2.yaml` (248K); Makefile `calico` target now `kubectl apply -f` the local copy (no runtime curl from GitHub).
+3. **Version skew** (client 1.32.2 vs server 1.36.1, 4 minors) → **pinned k8s to v1.32.5** to match kubectl → now client 1.32.2 / server 1.32.5 (aligned).
+4. **Calico 3.28 ahead of matrix on 1.36** (tested through ~1.31) → the 1.32 pin also brings k8s within Calico's supported range.
+5. *(carry to M3 pt2)* app image must NOT be `:latest` → use a **versioned tag** + `imagePullPolicy: IfNotPresent`/`Never` (kind-loaded; `Always` would try a registry).
+6. *(writeup)* Calico's container images are pinned by **tag** not digest in the vendored manifest → full air-gap would pin-by-digest + mirror to a private registry.
+- **Recreated** the cluster from the pinned config + vendored Calico → **3 nodes Ready at v1.32.5**, skew resolved.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [ ] Wire audit log on `/ioc` (§S7) — currently only pino request logging.
 - [ ] Rate limiting (§S9) — deferred, decide build vs writeup.
+- [ ] M3 pt2: app image versioned tag (not `:latest`) + `imagePullPolicy: IfNotPresent` (concern #5).
+- [ ] Writeup: pin Calico container images by digest + mirror for air-gap (concern #6).

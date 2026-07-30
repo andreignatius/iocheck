@@ -350,3 +350,64 @@ All 5 valid; found 2 more. Fixed all 7 — typecheck clean, **15/15 tests**.
 Files: `db/init.sh` (new,+x), removed `db/init.sql`, `.env`/`.env.example`, `package.json` (+ipaddr.js), `src/{validation,cache,app,index}.ts`, `src/validation.test.ts`. Journal updated.
 
 ---
+
+## Turn 15 — 2026-07-30 17:16 +08
+
+### Andre (verbatim)
+
+> sure great, can we work with M2 next?
+
+### Claude (summary)
+
+Built **Milestone 2 (containerize)** and verified it runs end-to-end (Docker available + daemon running).
+
+**Files:** `Dockerfile` (multi-stage: node:20-alpine builder → **distroless** nonroot runtime, §S4, 209MB), `docker-compose.yml` (service + postgres:16-alpine + redis:7-alpine; secrets via `${VAR:?}` from `.env`; `init.sh` mounted; app connects as least-priv role; healthchecks + `depends_on: service_healthy`), `.dockerignore`, `Makefile` (help/up/down/logs/ps/smoke/clean), `scripts/smoke.sh`; added `POSTGRES_SUPER_PASSWORD` to env files.
+
+**Live results (all green):** all 3 containers healthy; smoke exercised every path — malicious/unknown/negative-cache, **normalization** (`Evil.COM`→`evil.com`), **IPv6 canonicalization** (`::1`==`0:0:0:0:0:0:0:1`), **401** no-key, **400** bad sha256, metrics with **no value labels**. Resilience proven: oversized body → **413**; **Redis stopped → still served from Postgres** (fail-open), **readyz 200 with `cache:false`** (Redis soft, not SPOF), `cache_up=0`; **Redis restarted → background reconnect → `cache_up=1`** (§O3 demonstrated live).
+
+Journal: M2 checked off; deliverables updated (Dockerfile ✅, Makefile ✅ started). Stack left running.
+
+---
+
+## Turn 16 — 2026-07-30 17:49 +08
+
+### Andre (verbatim)
+
+> can we log the tests done in M2 and save the bash scripts and logs under logs/ and label accordingly?
+>
+> if all good let's proceed to M3
+
+### Claude (summary)
+
+**Evidence saved + M3 foundation started.**
+
+**M2 evidence:** saved `scripts/resilience.sh` (reusable), adjusted `.gitignore` so `logs/` is committed evidence (stray root `*.log` still ignored), captured labeled logs with timestamp+reproduce headers: `logs/M1-unit-tests.log`, `logs/M2-stack.log`, `logs/M2-smoke.log`, `logs/M2-resilience.log`, + `logs/README.md` index.
+
+**M3 part 1 — cluster:** installed **kind v0.32.0 + helm v4.2.3** (brew). `k8s/kind-config.yaml` = 3-node cluster with `disableDefaultCNI: true` (so Calico enforces NetworkPolicy §S5). Added Makefile k8s targets. Created cluster (k8s v1.36.1) → installed **Calico v3.28.2** → **3 nodes Ready**, calico-node 3/3. NetworkPolicy enforcement active.
+
+**Next (M3 part 2):** author + apply the manifests (namespace, ConfigMap, Secret, Postgres StatefulSet+PVC, Redis, iocheck Deployment w/ probes+securityContext+preStop+topology-spread+SA, Service, PDB, NetworkPolicy), `kind-load` the image, verify readyz gating.
+
+---
+
+## Turn 17 — 2026-07-30 18:21 +08
+
+### Andre (verbatim)
+
+> hmmmmm... looking at M3 cluster setup i have a few concerns...
+> 1. `k8s/kind-config.yaml` currently doesn't pin the node image, could we pin it by version and digest?
+> 2. in `Makefile` calico target — i think we should vendor the Calico manifest instead of curl-ing it at runtime, so we vendor it once into k8s/calico-v3.28.2.yaml and kubectl apply -f the local copy... do you detect any other concerns?
+
+### Claude (summary)
+
+Both valid (supply-chain / reproducible spin-up); found 4 more.
+
+1. **Pin node image** ✅ — `kind-config.yaml` pins `kindest/node:v1.32.5@sha256:e3b2327e…`. Caught that my first `docker manifest inspect` grabbed a **per-platform sub-manifest** digest, not the multi-arch **list** digest → used `docker buildx imagetools inspect` for the correct arm64-safe list digest.
+2. **Vendor Calico** ✅ — `k8s/calico-v3.28.2.yaml` (248K) committed; Makefile `calico` target applies the local copy (no runtime curl).
+3. **Version skew** — client 1.32.2 vs server 1.36.1 (4 minors, unsupported). Fixed by pinning k8s to **1.32.5** → aligned.
+4. **Calico 3.28 ahead of matrix on 1.36** (tested ~≤1.31) → 1.32 pin also brings it in range.
+5. *(carry M3 pt2)* app image must not be `:latest` → versioned tag + `imagePullPolicy: IfNotPresent`/`Never`.
+6. *(writeup)* Calico container images pinned by tag not digest → air-gap would pin-by-digest + mirror.
+
+**The 1.32 pin resolves 3 AND 4 together** (matches kubectl + within Calico support + mature). Recreated cluster (nothing deployed yet) from pinned config + vendored Calico → **3 nodes Ready at v1.32.5**, skew gone.
+
+---

@@ -1,0 +1,19 @@
+# Multi-node kind cluster for iocheck (§O5 — so HA/topology-spread is real, not theater).
+# Default CNI (kindnet) is DISABLED so we install Calico, which actually enforces
+# NetworkPolicy (§S5 — kindnet does not). Nodes stay NotReady until Calico is applied.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: iocheck
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"   # matches Calico's default IP pool
+# Node image pinned by tag + manifest-list digest (reproducible, arm64-safe).
+# k8s v1.32.5 chosen deliberately: matches the local kubectl (1.32.2 → no version
+# skew) and sits within Calico v3.28's supported k8s range (1.36 was ahead of it).
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.32.5@sha256:e3b2327e3a5ab8c76f5ece68936e4cafaa82edf58486b769727ab0b3b97a5b0d
+  - role: worker
+    image: kindest/node:v1.32.5@sha256:e3b2327e3a5ab8c76f5ece68936e4cafaa82edf58486b769727ab0b3b97a5b0d
+  - role: worker
+    image: kindest/node:v1.32.5@sha256:e3b2327e3a5ab8c76f5ece68936e4cafaa82edf58486b769727ab0b3b97a5b0d
