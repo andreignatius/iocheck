@@ -1,0 +1,16 @@
+# iocheck M2 — stack status & image size
+# captured: 2026-07-30 17:39 +08
+# reproduce: make up && docker compose ps
+
+## docker + compose versions
+Docker version 28.1.1, build 4eba377
+Docker Compose version v2.35.1-desktop.1
+
+## docker compose ps
+NAME                 IMAGE                COMMAND                  SERVICE    CREATED          STATUS                    PORTS
+iocheck-iocheck-1    iocheck-iocheck      "/nodejs/bin/node di…"   iocheck    24 minutes ago   Up 24 minutes (healthy)   0.0.0.0:3000->3000/tcp
+iocheck-postgres-1   postgres:16-alpine   "docker-entrypoint.s…"   postgres   24 minutes ago   Up 24 minutes (healthy)   0.0.0.0:5432->5432/tcp
+iocheck-redis-1      redis:7-alpine       "docker-entrypoint.s…"   redis      24 minutes ago   Up 23 minutes (healthy)   0.0.0.0:6379->6379/tcp
+
+## service image size
+iocheck-iocheck:latest  209MB

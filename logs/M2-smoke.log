@@ -1,0 +1,43 @@
+# iocheck M2 — smoke test (happy paths + normalization + IPv6 + auth + validation + metrics)
+# captured: 2026-07-30 17:39 +08
+# reproduce: make up && ./scripts/smoke.sh
+
+
+== healthz (liveness, process-only) ==
+{"status":"ok"}
+
+== readyz (PG hard-dep; cache reported) ==
+{"status":"ready","db":true,"cache":true}
+
+== lookup seeded malicious IP -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"203.0.113.7","source":"seed-abuseipdb","score":90}}
+
+== lookup unknown IP -> unknown (negative-cached) ==
+{"verdict":"unknown"}
+
+== upsert domain (authed) — note mixed case in ==
+{"type":"domain","value":"evil.com","source":"smoke","score":80}
+
+== lookup the upserted domain by lowercase -> malicious (normalization works) ==
+{"verdict":"malicious","ioc":{"type":"domain","value":"evil.com","source":"smoke","score":80}}
+
+== IPv6 equivalence: upsert ::1 then look up its long form -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"::1","source":"smoke","score":50}}
+
+== upsert WITHOUT key -> 401 ==
+HTTP 401
+
+== invalid sha256 -> 400 ==
+HTTP 400
+
+== metrics (first lines; note NO ioc value labels) ==
+http_requests_total{route="/healthz",method="GET",status="200"} 147
+http_requests_total{route="/readyz",method="GET",status="200"} 6
+http_requests_total{route="/lookup",method="POST",status="200"} 11
+http_requests_total{route="/ioc",method="POST",status="201"} 4
+http_requests_total{route="/ioc",method="POST",status="401"} 3
+http_requests_total{route="/lookup",method="POST",status="400"} 2
+http_requests_total{route="/metrics",method="GET",status="200"} 4
+iocheck_lookup_results_total{type="ip",verdict="malicious"} 6
+
+smoke complete.

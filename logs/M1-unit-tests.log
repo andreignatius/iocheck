@@ -1,0 +1,14 @@
+# iocheck M1 — unit tests (validation + normalization, §S3)
+# captured: 2026-07-30 17:39 +08
+# reproduce: nvm use 20 && npm test
+
+
+ RUN  v2.1.9 /Users/andre/Documents/ai-context-system/iocheck
+
+ ✓ src/validation.test.ts (15 tests) 12ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  17:39:50
+   Duration  1.09s (transform 97ms, setup 0ms, collect 131ms, tests 12ms, environment 0ms, prepare 71ms)
+

@@ -1,0 +1,18 @@
+# iocheck M2 — resilience (413 oversized body §S3; Redis fail-open + recovery §O3)
+# captured: 2026-07-30 17:39 +08
+# reproduce: make up && ./scripts/resilience.sh
+
+
+== oversized body (>8kb) -> expect 413 ==
+HTTP 413
+
+== FAIL-OPEN: stop Redis, lookup must still serve from Postgres ==
+lookup seeded IP with Redis DOWN: {"verdict":"malicious","ioc":{"type":"ip","value":"203.0.113.7","source":"seed-abuseipdb","score":90}}
+readyz with Redis DOWN (db hard=ok, cache soft=false, still 200): HTTP 200 {"status":"ready","db":true,"cache":false}
+cache_up gauge: iocheck_cache_up 0
+
+== RECOVER: restart Redis, background reconnect flips cache_up back to 1 ==
+cache_up gauge after recovery: iocheck_cache_up 1
+readyz after recovery: {"status":"ready","db":true,"cache":true}
+
+resilience checks complete.

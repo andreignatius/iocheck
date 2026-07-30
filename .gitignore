@@ -9,9 +9,8 @@ dist/
 .env.local
 *.local
 
-# Logs
-*.log
-logs/
+# Transient runtime logs at repo root only. NOTE: logs/ is COMMITTED test evidence.
+/*.log
 
 # Test / coverage
 coverage/

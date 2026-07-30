@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Quick end-to-end sanity check against a running stack (not the load test — that's k6, later).
+set -euo pipefail
+
+BASE="${BASE:-http://localhost:3000}"
+KEY="${IOC_ADMIN_API_KEY:-dev_admin_key_do_not_use_in_prod}"
+ct='content-type: application/json'
+
+say() { printf '\n== %s ==\n' "$1"; }
+
+say "healthz (liveness, process-only)"
+curl -fsS "$BASE/healthz"; echo
+
+say "readyz (PG hard-dep; cache reported)"
+curl -fsS "$BASE/readyz"; echo
+
+say "lookup seeded malicious IP -> malicious"
+curl -fsS -XPOST "$BASE/lookup" -H "$ct" -d '{"type":"ip","value":"203.0.113.7"}'; echo
+
+say "lookup unknown IP -> unknown (negative-cached)"
+curl -fsS -XPOST "$BASE/lookup" -H "$ct" -d '{"type":"ip","value":"8.8.8.8"}'; echo
+
+say "upsert domain (authed) — note mixed case in"
+curl -fsS -XPOST "$BASE/ioc" -H "x-api-key: $KEY" -H "$ct" \
+  -d '{"type":"domain","value":"Evil.COM","source":"smoke","score":80}'; echo
+
+say "lookup the upserted domain by lowercase -> malicious (normalization works)"
+curl -fsS -XPOST "$BASE/lookup" -H "$ct" -d '{"type":"domain","value":"evil.com"}'; echo
+
+say "IPv6 equivalence: upsert ::1 then look up its long form -> malicious"
+curl -fsS -XPOST "$BASE/ioc" -H "x-api-key: $KEY" -H "$ct" \
+  -d '{"type":"ip","value":"::1","source":"smoke","score":50}' >/dev/null
+curl -fsS -XPOST "$BASE/lookup" -H "$ct" -d '{"type":"ip","value":"0:0:0:0:0:0:0:1"}'; echo
+
+say "upsert WITHOUT key -> 401"
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' -XPOST "$BASE/ioc" -H "$ct" \
+  -d '{"type":"ip","value":"1.2.3.4","source":"x","score":1}'
+
+say "invalid sha256 -> 400"
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' -XPOST "$BASE/lookup" -H "$ct" \
+  -d '{"type":"sha256","value":"deadbeef"}'
+
+say "metrics (first lines; note NO ioc value labels)"
+curl -fsS "$BASE/metrics" | grep -E '^iocheck_|^http_requests_total' | head -8
+
+echo; echo "smoke complete."
