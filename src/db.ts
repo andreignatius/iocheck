@@ -16,8 +16,8 @@ export const pool = new Pool({
   user: config.POSTGRES_USER,
   password: config.POSTGRES_PASSWORD,
   max: config.PG_POOL_MAX,
-  // Fail fast rather than let a request hang on a saturated pool during a storm.
-  connectionTimeoutMillis: 3_000,
+  // Bounds how long a request waits for a free pool slot under saturation (§6a#3).
+  connectionTimeoutMillis: config.PG_CONNECTION_TIMEOUT_MS,
   idleTimeoutMillis: 30_000,
 });
 

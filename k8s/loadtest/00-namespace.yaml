@@ -1,0 +1,7 @@
+# k6 load generator runs in its own namespace (no restricted PSS → no friction for the
+# stock k6 image). It reaches the app via the Service FQDN; the iocheck NetworkPolicy
+# already allows ingress on :3000 from anywhere (§6a#9).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loadtest

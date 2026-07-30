@@ -1,0 +1,23 @@
+# THROWAWAY baseline — replicates the team's failed config (CPU 70%, min 2 / max 8).
+# Purpose: demonstrate that a CPU-based HPA does NOT scale under this I/O-bound storm
+# (challenge #1). It lives OUTSIDE k8s/manifests/ so `make deploy` never applies it, and
+# it MUST be deleted before the M6 KEDA ScaledObject (two autoscalers would fight — §6a#13).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: iocheck-cpu
+  namespace: iocheck
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: iocheck
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

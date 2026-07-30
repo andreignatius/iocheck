@@ -22,7 +22,10 @@ export function createApp() {
 
   // Oversized-body DoS guard (§S3).
   app.use(express.json({ limit: config.BODY_LIMIT }));
-  app.use(pinoHttp({ logger }));
+  // autoLogging off: at storm RPS a per-request access log is a real CPU cost, and NOT
+  // logging every lookup avoids recording sensitive query patterns (§S7). Prometheus
+  // metrics remain the request-level observability; errors still log via the handler.
+  app.use(pinoHttp({ logger, autoLogging: false }));
 
   // --- metrics middleware: RPS, latency, in-flight (§O6) ---
   // route label is the fixed pattern (never the raw URL) to keep cardinality bounded.

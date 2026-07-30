@@ -647,3 +647,88 @@ Both confirmed + added to §6a (now 16 items).
 - **#15 (D) No OOM/restarts mid-run** — a restart contaminates evidence (spurious replica change, restart-induced latency, cold cache). Watch mem working-set vs 256Mi; verify `RESTARTS=0` + no `OOMKilled` before trusting a run; bump mem limit if OOM under load.
 
 ---
+
+## Turn 30 — 2026-07-30 21:39 +08
+
+### Andre (verbatim)
+
+> let's do it!
+
+### Claude (summary)
+
+**M5 prep + k6 built; smoke run REVEALED THE THESIS INVERTED.** Prep: `PG_CONNECTION_TIMEOUT_MS` env (default 10000), mem 256→512Mi, v0.1.2. Built `lookup-storm.js` (cache-miss storm, ramping-VUs) + `k8s/loadtest/` (own ns, Job hitting Service FQDN) + Makefile `loadtest`. Smoke (60 VUs, 2.5min): **CPU ~480m/pod (480% of request, near limit), p99 only ~0.2–0.44s, heavy CFS throttle ~1.9/s, restarts 0.** → our service is **CPU-bound not I/O-bound** (PK lookup on tiny PG = sub-ms → pool never saturates → per-request CPU dominates). Seconds-of-latency needs a slow downstream. Presented Options A (model store latency), B (big dataset — unreliable), C (reframe — weak); recommended A.
+
+---
+
+## Turn 31 — 2026-07-30 21:39 +08
+
+### Andre (verbatim)
+
+> let's document our progress in journal first...
+>
+> i'm torn between option A and B but i think Option A is more repeatable...
+>
+> but i think for Option A the modeled latency must hold a pool connection, not be a bare app-side setTimeout... we should model it in the DB round-trip so it occupies a pool slot
+>
+> also do you think we should co-tune the CPU request, with throughput capped low, measure the resulting CPU and size the request so it lands comfortably below 70%? larger modeled latency both drops CPU further and is more defensible imo... then we verify the full signature: p99 -> seconds +  CPU util <70% + CFS throttle is low?
+
+### Claude (summary)
+
+Documented the smoke finding in journal. **Both Andre refinements confirmed correct + adopted:** (1) model latency *in the DB round-trip via `pg_sleep` on a held pooled connection* (not app-side setTimeout — that wouldn't hold a pool slot → no saturation → no queue); (2) **co-tune**: larger modeled latency caps throughput → lowers CPU + more defensible (models remote feed lookup); measure CPU, size request so util <70%; **3-condition acceptance test: p99→seconds AND CPU util <70% AND throttle≈0**; also trim per-request logging. Implementing `STORE_LOOKUP_LATENCY_MS` next.
+
+---
+
+## Turn 32 — 2026-07-30 22:03 +08
+
+### Andre (verbatim)
+
+> (continuation of Turn 31 — implement Option A with the two refinements + co-tune to the 3-condition signature) [note: Turn 30/31 collapsed; Turn 32 covers implementation]
+
+### Claude (summary)
+
+Implemented Option A: `STORE_LOOKUP_LATENCY_MS` via **`pg_sleep` on a held pooled connection** (findIoc) + disabled per-request access logging; v0.1.3. Swept L @ 60 VUs: L=300 → p99 3s but CPU 100–130% ✗; L=900 → p99 5s (clipped) ✗; **L=700 + request 100→150m → p99 ~3s ✓, throttle ~0 ✓, restarts 0 ✓, CPU util ~40–55% steady** but transient **~86% burst during the ramp**. Finding: per-request CPU (~2–4ms: zod+ipaddr+json+prom+2 pg round-trips) is a floor → CPU tracks arrival rate. **Open decision surfaced to Andre:** the 86% ramp-burst risks the CPU-HPA scaling to 3 → contaminating "pinned at 2"; proposed fix = **request 150→200m** (bursts → 65% util, always <70%) + confirm **L=700** defensibility (models a slow remote feed lookup). Awaiting sign-off before baseline capture.
+
+---
+
+## Turn 33 — 2026-07-30 22:30 +08
+
+### Andre (verbatim)
+
+> re decision 1 : bump the CPU "reservation" from 150m to 200m... the angle being that we reserved what the app actually needs, i.e. its peak plus a little headroom
+>
+> re decision 2 : agree the angle being that the 700ms is fake slowness we added because our toy 3-row database is unrealistically instant, whereas real threat-intel lookups are genuinely slow (for e.g. VirusTotal / AbuseIPDB-style APIs really do run ~200ms–1s, higher at p99)
+>
+> what do u think?
+
+### Claude (summary)
+
+Affirmed both framings (honest + correct). Reinforced decision 2: (1) transparent/injected — env-gated, off by default, documented; (2) corrects a toy artifact toward reality (real IOC stores ARE slow); (3) L calibrated to reproduce the prompt's own stated 2–3s p99; + fullest-honesty disclosure ("with my trivial DB this impl would be CPU-bound; that's an artifact of the instant toy DB — real services are I/O-bound, which I model"). **Locked L=700 + request=200m.**
+
+**Ran the baseline capture → CHALLENGE #1 PROVEN** (`logs/M5-cpu-hpa-baseline.log`): applied team's CPU-HPA (70%/2/8); under the storm **CPU util 10–35% → replicas pinned at 2**, p99 breached ~3–5s (k6 avg 1.96s/med 2s/max 6.69s), **k6 `p(99)<200` FAILED**, **100% status-200 / 0 errors** (pure queueing not 500s), throttle ~0, restarts 0. Grafana money-shot populated. **M5 ✅.** Next: M6 (delete CPU-HPA → KEDA RPS scaler; per-pod capacity ~14 RPS → threshold ~10–12).
+
+---
+
+## Turn 34 — 2026-07-30 22:37 +08
+
+### Andre (verbatim)
+
+> [two screenshots: iocheck overview 4-panel + the "Challenge #1 — CPU % of request vs p99" money-shot]
+> here we go... the two screenshots! shall we document them in docs/ as well?
+
+### Claude (summary)
+
+Screenshots surfaced a **dashboard accuracy bug**: the CPU panels still assumed the old **100m** request, so after the →200m bump they **over-reported CPU 2×** — the money-shot showed CPU crossing the 70% line, contradicting the real HPA reading (10–35%) and undermining the thesis. **Fixed:** money-shot CPU% expr → `100*avg(rate)/0.2` (% of 200m); per-pod threshold 70→140m + retitled. Redeployed Grafana; 22:25 storm data still in Prometheus (2h) → re-capture without re-running (CPU now sits ~25–50% under the 70% line). Created **`docs/evidence/README.md`** (captions + one-sentence takeaway); Andre to save re-captured PNGs as `challenge1-overview.png` + `challenge1-cpu-vs-p99.png`.
+
+---
+
+## Turn 35 — 2026-07-30 22:45 +08
+
+### Andre (verbatim)
+
+> do i retake screenshots now? ... how about now? [first re-capture still showed OLD panels — 5s auto-refresh reloads data not dashboard definition] ... how about now? [second re-capture correct after hard-refresh]
+
+### Claude (summary)
+
+First re-capture still showed stale panels (title "70% of 100…", CPU crossing 70%) — cause: Grafana's 5s auto-refresh reloads query *data*, not the dashboard *model*; needed a hard refresh (⌘⇧R). Second re-capture correct: CPU% ~50%, titles right. Then pinned axes (money-shot 0–100%, per-pod 0–160m) so the **70% / 140m threshold lines are in-frame**; redeployed → final capture: **CPU% peaks ~54% clearly UNDER the red 70% line while p99 spikes ~5s** — the definitive challenge-#1 money-shot. Added caption note (replicas blip to 3 @22:21 = rolling-update surge, not the HPA). Evidence README done; PNGs → `docs/evidence/`. **M5 fully closed.**
+
+---

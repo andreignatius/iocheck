@@ -56,7 +56,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: iocheck
-          image: iocheck:0.1.1
+          image: iocheck:0.1.3
           imagePullPolicy: IfNotPresent     # kind-loaded image; never pull from a registry (#5)
           securityContext:
             allowPrivilegeEscalation: false
@@ -99,8 +99,14 @@ spec:
             periodSeconds: 5
             failureThreshold: 3
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits: { cpu: "500m", memory: "256Mi" }
+            # CPU request right-sized to the app's actual working set under load (§6a#1 co-tune):
+            # usage bursts to ~130m during the storm ramp, so 200m = peak + headroom. Even that
+            # burst is ~65% of a 200m request — under the 70% HPA trigger (140m) — so the CPU-HPA
+            # never fires while p99 breaches. CPU is genuinely below threshold: the app is I/O-bound.
+            requests: { cpu: "200m", memory: "128Mi" }
+            # CPU limit 500m: usage is ~3x under it → no CFS throttling to confound the thesis
+            # (§6a#4). mem limit 512Mi for load-test headroom — avoid OOM mid-run (§6a#15).
+            limits: { cpu: "500m", memory: "512Mi" }
           volumeMounts:
             - name: tmp
               mountPath: /tmp                 # writable scratch (rootfs is read-only)

@@ -15,6 +15,8 @@ data:
   POSTGRES_DB: "iocheck"
   POSTGRES_USER: "iocheck_app"      # app connects as the least-priv role (§S2)
   PG_POOL_MAX: "10"
+  PG_CONNECTION_TIMEOUT_MS: "10000" # let p99 climb cleanly under pool saturation (§6a#3)
+  STORE_LOOKUP_LATENCY_MS: "700"    # DEMO: model a slow remote reputation/feed lookup on cache miss (§6a)
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
   CACHE_TTL_SECONDS: "300"

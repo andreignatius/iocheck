@@ -11,7 +11,7 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 - [x] **M2 — Containerize** (Dockerfile, docker-compose: service + pg + redis) — *2026-07-30; runs end-to-end*
 - [x] **M3 — Cluster** (multi-node kind + Calico; full manifests, deployed + verified) — *2026-07-30*
 - [x] **M4 — Observability** (Prometheus + Grafana + metrics-server + KEDA; cadvisor CPU overlay) — *2026-07-30*
-- [ ] **M5 — Baseline evidence** (CPU-HPA + k6 spike → "CPU flat, no scale, p99 blows past 200ms" → challenge #1)
+- [x] **M5 — Baseline evidence** (CPU-HPA + k6 spike → challenge #1 PROVEN) — *2026-07-30*
 - [ ] **M6 — Real autoscaler** (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
 - [ ] **M7 — Load-sharing** (even per-pod distribution; keep-alive → challenge #2)
 - [ ] **M8 — Resilience / chaos** (kill pod + kill Redis under load → drain §O2 + fail-open §O3)
@@ -163,6 +163,63 @@ Andre asked to enumerate + document M5 pitfalls first (evidence-gathering is the
 Andre added two more, both folded into plan §6a (now 16 items):
 - **#4 (group A) No CFS throttling** — confirm `rate(container_cpu_cfs_throttled_seconds_total[1m])≈0` during the storm. Throttling injects latency (confounds "latency is I/O") AND zero-throttle is *positive* evidence CPU isn't the bottleneck. <70m HPA trigger is ~7× under the 500m limit → should hold, but verify (cadvisor already scraped in M4-step2 → metric available; could add a dashboard panel in M5).
 - **#15 (group D) No OOM/pod restarts mid-run** — a restart contaminates evidence (spurious replica change, restart latency, cold cache). Watch mem working-set vs 256Mi limit; verify `RESTARTS=0` + no `OOMKilled` before trusting a run; may need to bump mem limit if OOM under load.
+
+### 2026-07-30 21:39 — M5 smoke run: thesis INVERTED (key finding) → Option A
+Built k6 (cache-miss storm, in-cluster Job hitting the Service FQDN, `lookup-storm.js` + `k8s/loadtest/` + Makefile `loadtest`). Prep done first: **PG `connectionTimeoutMillis` env-configurable** (`PG_CONNECTION_TIMEOUT_MS`, default 10000) + **mem limit 256→512Mi** + **v0.1.2**.
+
+**Smoke result (2.5-min storm, 60 VUs) — the thesis did NOT hold:**
+- CPU **~480m/pod** (= **480% of the 100m request**, near the 500m limit) — CPU-HPA *would* fire.
+- p99 only **~0.2–0.44s** (not the 2–3s the prompt describes).
+- **Heavy CFS throttling** (~1.9 throttled-s/s) — the latency we saw was partly throttle-induced, not I/O queueing.
+- Restarts **0** (pitfall #15 clean).
+
+**Why (queueing theory, not a bug):** our service is **CPU-bound, not I/O-bound**. A PK lookup on a tiny Postgres table is sub-ms → the pool never saturates → no I/O queue → at high RPS the app's per-request CPU (JSON/zod/pino/prom/driver) dominates → CPU saturates + throttles. **Seconds-of-latency requires a slow downstream; our DB is too fast.** (This is *why* the team's premise exists — their store was genuinely slow; ours isn't, so it doesn't reproduce their symptom.)
+
+**Decision — Option A: model a realistic backing-store latency** (Andre: "more repeatable" than Option B's big-dataset approach). **Two Andre refinements (both correct, adopted):**
+1. **Latency must hold a pool connection** — model it *in the DB round-trip* (a `pg_sleep` on a held pooled client), NOT a bare app-side `setTimeout` (which wouldn't occupy a pool slot → pool wouldn't saturate → no queueing).
+2. **Co-tune CPU request + verify the full signature** — larger modeled latency caps throughput low → drops CPU further *and* is more defensible (models a remote feed/enrichment lookup). Measure CPU at capped throughput, size request so util lands comfortably <70%. **Acceptance test = all three: p99 → seconds AND CPU util <70% AND CFS throttle ≈ 0.** Also trim per-request logging to cut CPU baseline.
+
+**Next:** implement `STORE_LOOKUP_LATENCY_MS` via `pg_sleep` on a held connection (findIoc path) + trim pino per-request logging + bump 0.1.3 → run the co-tuning loop until the 3-condition signature holds → then the CPU-HPA baseline capture.
+
+### 2026-07-30 22:03 — M5 co-tuning: implemented modeled latency + swept L (Option A)
+Implemented Option A: `STORE_LOOKUP_LATENCY_MS` via **`pg_sleep` on a held pooled connection** (repository.findIoc) so it occupies a pool slot (Andre's requirement) + disabled per-request access logging (CPU + §S7 privacy). v0.1.3.
+**Latency sweep (60 VUs, 2 pods, pool=10, measuring the 3-condition signature):**
+- **L=300ms:** p99 ~2–3s ✓, but CPU ~100–130% of 100m request ✗ (throughput too high).
+- **L=900ms:** p99 ~5s (clipped at top bucket — too slow) ✗, CPU still bursty ~42–78%.
+- **L=700ms + right-size request 100→150m:** **p99 ~3s ✓, throttle ~0 ✓, restarts 0 ✓, CPU util steady ~40–55% ✓** — BUT transient burst to **~86% (CPU ~130m)** during the load ramp.
+- **Finding:** per-request CPU (~2–4ms: zod + ipaddr-normalize + json + prom + 2 pg round-trips) is a floor, so CPU tracks *arrival* rate; low CPU needs low throughput (higher L) or a right-sized request. L=700 models a realistic slow remote reputation/feed lookup on cache miss.
+- **Open decision (→ Andre):** the ramp burst to ~86% util risks a CPU-HPA briefly scaling to 3 → contaminating the "pinned at 2" evidence. Fix = **request 150→200m** (usage bursts 130m → 65% util, always <70%; principled: size request so normal bursts sit under the trigger). Awaiting sign-off on L=700 + request=200m before the baseline capture.
+
+### 2026-07-30 22:30 — Milestone 5: CHALLENGE #1 PROVEN ✅ (evidence captured)
+Locked demo config (Andre signed off both): **L=700ms** (models a slow remote reputation/feed lookup; calibrated to reproduce the prompt's stated 2–3s p99; env-gated, off by default, documented) + **cpu request 200m** (right-sized to peak usage ~130m + headroom → even ramp bursts <70%). Applied the team's failed config as a throwaway HPA (`k8s/baseline/cpu-hpa.yaml`: Utilization 70%, min2/max8).
+
+**Baseline capture (evidence: `logs/M5-cpu-hpa-baseline.log`):**
+- **HPA CPU util 10–35%/70% → REPLICAS pinned at 2** the entire storm — CPU-HPA never scaled.
+- **p99 breached to ~3–5s** (k6: avg 1.96s, med 2s, p95 2.94s, max 6.69s) — 15–24× the 200ms SLO.
+- **k6 SLO gate `p(99)<200ms` FAILED** (documented proof); **100% status-200, 0 failures** (3413 reqs) → latency is *pure queueing*, not 500s (connection-timeout tuning §6a#3 worked).
+- **CFS throttle ~0** (§6a#4 ✓); **restarts 0** (§6a#15 ✓).
+- **Grafana money-shot now populated** (dashboard "Challenge #1 — CPU% vs p99" panel): CPU flat ~15–35% while p99 spikes to seconds, replicas flat at 2.
+
+**Verdict:** CPU is blind to the I/O bottleneck — proven with measured evidence, not theory. All §6a acceptance conditions met. Config bumped to **v0.1.3**.
+
+**M6 prep:** delete `iocheck-cpu` HPA before applying KEDA (§6a#13). Per-pod capacity ≈ 14 lookup-RPS/pod at saturation (L=700, pool=10) → KEDA per-pod threshold ~10–12 RPS.
+
+### 2026-07-30 22:37 — Fix: dashboard CPU panels were stale (100m→200m request) + evidence doc
+Andre captured the money-shot screenshots — which surfaced a bug: the Grafana CPU panels still assumed the
+**old 100m request** (`1000*avg(rate)`=millicores="% of 100m", threshold lines at 70), so after the
+request→200m bump they **over-reported CPU by 2×** — the money-shot showed CPU cresting ~100% and *crossing*
+the 70% line, contradicting the real HPA reading (10–35%). **Fixed:** money-shot CPU% expr → `100*avg(rate)/0.2`
+(% of 200m); per-pod panel threshold 70→**140m** + title "(70% of 200m request)". Redeployed; 22:25 storm data
+still in Prom (2h) → re-captured without re-running. Created **`docs/evidence/README.md`** with captions + the
+one-sentence takeaway; PNGs to be saved as `challenge1-overview.png` + `challenge1-cpu-vs-p99.png`.
+
+### 2026-07-30 22:45 — Money-shot finalized (axes pinned; threshold lines visible)
+Pinned the money-shot CPU axis 0–100% (70% line now in frame) + per-pod panel 0–160m (140m line in frame),
+redeployed. After a hard refresh Andre re-captured: **money-shot shows CPU% peaking ~54% clearly UNDER the
+red 70% trigger line while p99 spikes to ~5s** — the definitive challenge-#1 image. Overview: CPU per pod
+~108m under the 140m line, RPS ~28, replicas flat at 2. Added a caption note re: the tiny replicas blip to 3
+at ~22:21 = rolling-update surge (maxSurge:1) from the pre-run redeploy, NOT the CPU-HPA. Screenshots to be
+saved as `docs/evidence/challenge1-{overview,cpu-vs-p99}.png`.
 
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.

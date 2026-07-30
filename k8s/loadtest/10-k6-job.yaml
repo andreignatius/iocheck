@@ -1,0 +1,34 @@
+# k6 storm as a run-to-completion Job. Script comes from the k6-scripts ConfigMap
+# (created by `make loadtest` from the committed .js). Re-run = delete + re-apply.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-storm
+  namespace: loadtest
+spec:
+  backoffLimit: 0            # a load test shouldn't silently retry
+  completions: 1
+  template:
+    metadata:
+      labels: { app: k6-storm }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.54.0
+          command: ["k6", "run", "/scripts/lookup-storm.js"]
+          env:
+            - name: TARGET
+              value: "http://iocheck.iocheck.svc.cluster.local:3000"
+            - name: PEAK_VUS
+              value: "60"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests: { cpu: "200m", memory: "128Mi" }
+            limits: { cpu: "1", memory: "256Mi" }
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-scripts

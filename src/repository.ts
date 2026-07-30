@@ -1,3 +1,4 @@
+import { config } from './config';
 import { pool } from './db';
 import type { IocType, UpsertInput } from './validation';
 
@@ -15,13 +16,25 @@ export interface IocRecord {
  * so SQL injection is structurally impossible regardless of input.
  */
 export async function findIoc(type: IocType, value: string): Promise<IocRecord | null> {
-  const { rows } = await pool.query<IocRecord>(
-    `SELECT type, value, source, score, added_at
-       FROM ioc
-      WHERE type = $1 AND value = $2`,
-    [type, value],
-  );
-  return rows[0] ?? null;
+  // Use a single held connection so the optional modeled store-latency (pg_sleep) and the
+  // lookup occupy ONE pool slot for the whole round-trip. Under a cache-miss storm this
+  // saturates the pool → requests queue → the I/O-bound latency regime (§6a). Bare app-side
+  // sleep would NOT hold a slot, so the pool wouldn't saturate.
+  const client = await pool.connect();
+  try {
+    if (config.STORE_LOOKUP_LATENCY_MS > 0) {
+      await client.query('SELECT pg_sleep($1)', [config.STORE_LOOKUP_LATENCY_MS / 1000]);
+    }
+    const { rows } = await client.query<IocRecord>(
+      `SELECT type, value, source, score, added_at
+         FROM ioc
+        WHERE type = $1 AND value = $2`,
+      [type, value],
+    );
+    return rows[0] ?? null;
+  } finally {
+    client.release();
+  }
 }
 
 /** Idempotent upsert (safe to retry) — ON CONFLICT updates the existing row. */

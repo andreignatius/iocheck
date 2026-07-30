@@ -1,0 +1,35 @@
+# iocheck M5 — CHALLENGE #1 evidence: CPU-HPA does NOT scale under an I/O-bound storm
+# captured: 2026-07-30 22:25 +08
+# config: STORE_LOOKUP_LATENCY_MS=700, k6 PEAK_VUS=60, iocheck cpu request=200m/limit=500m,
+#         CPU-HPA replicating team's config (Utilization 70%, min 2 / max 8)
+# reproduce: kubectl apply -f k8s/baseline/cpu-hpa.yaml && make loadtest
+
+== CPU-HPA before load ==
+NAME          REFERENCE            TARGETS        MINPODS   MAXPODS   REPLICAS   AGE
+iocheck-cpu   Deployment/iocheck   cpu: 11%/70%   2         8         2          4m25s
+
+== storm running — HPA CPU%/replicas + signature over time ==
+TIME      HPAcpu%      reps     p99(s)   throttle
+22:25:54  11%          2        0.995    0.006   
+22:26:10  10%          2        1.879    0.037   
+22:26:25  20%          2        1.782    0.028   
+22:26:40  21%          2        2.442    0.029   
+22:26:56  19%          2        5.0      0.421   
+22:27:12  26%          2        5.0      0.148   
+22:27:27  59%          2        2.985    0.005   
+22:27:42  35%          2        2.986    0.013   
+22:27:58  27%          2        4.79     0.358   
+
+== after: HPA never scaled; pod restarts ==
+NAME          REFERENCE            TARGETS        MINPODS   MAXPODS   REPLICAS   AGE
+iocheck-cpu   Deployment/iocheck   cpu: 24%/70%   2         8         2          6m49s
+iocheck-74b47465f7-48rt6   0
+iocheck-74b47465f7-msvn8   0
+
+== k6's own SLO gate (p(99)<200ms) — EXPECTED TO FAIL under CPU-HPA ==
+     checks ......................: 100.00%  3413/3413  (ZERO failures — pure queueing, not 500s)
+   ✗ http_req_duration ..........: avg=1.96s  med=2s  p95=2.94s  max=6.69s
+   ✗ thresholds on http_req_duration crossed  ->  k6 SLO gate p(99)<200ms FAILED (as intended under CPU-HPA)
+
+VERDICT: CPU util stayed ~15–34% (< 70% trigger) -> CPU-HPA held replicas at 2,
+         while p99 breached to ~3-4.7s (>=15x the 200ms SLO). CPU is blind to the I/O bottleneck.

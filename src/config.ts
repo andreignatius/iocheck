@@ -17,6 +17,16 @@ const EnvSchema = z.object({
   POSTGRES_USER: z.string().min(1),
   POSTGRES_PASSWORD: z.string().min(1),
   PG_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // How long a request waits for a free pool connection before erroring. Under pool
+  // saturation this bounds how high p99 climbs before requests 500 (§6a#3): a higher
+  // value lets latency rise cleanly (queueing) instead of tipping into errors.
+  PG_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  // Models a realistic backing-store round-trip latency (ms). 0 = off (default). When set,
+  // the lookup holds a pool connection for this long via pg_sleep — so a cache-miss storm
+  // saturates the pool and requests queue, reproducing the I/O-bound regime a real (larger/
+  // remote) threat-intel store shows. A toy PK lookup on a 3-row table is unrealistically
+  // sub-ms; this makes the CPU-vs-I/O demonstration faithful (§6a). Documented in REPORT.
+  STORE_LOOKUP_LATENCY_MS: z.coerce.number().int().nonnegative().default(0),
 
   REDIS_HOST: z.string().min(1),
   REDIS_PORT: z.coerce.number().int().positive().default(6379),

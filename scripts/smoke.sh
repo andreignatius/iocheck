@@ -3,7 +3,10 @@
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:3000}"
-KEY="${IOC_ADMIN_API_KEY:-dev_admin_key_do_not_use_in_prod}"
+# Load the admin key from .env (gitignored) if present, else require it in the environment —
+# so no credential is committed to the repo (§S2).
+[ -f .env ] && { set -a; . ./.env; set +a; }
+KEY="${IOC_ADMIN_API_KEY:?set IOC_ADMIN_API_KEY (in .env or the environment)}"
 ct='content-type: application/json'
 
 say() { printf '\n== %s ==\n' "$1"; }

@@ -41,7 +41,7 @@ clean: ## Stop and REMOVE volumes (fresh DB next up)
 
 # ---- Kubernetes (kind) — M3+ -------------------------------------------------
 CLUSTER := iocheck
-VERSION := 0.1.1
+VERSION := 0.1.3
 IMAGE := iocheck:$(VERSION)          # versioned tag, NOT :latest (concern #5)
 NS := iocheck
 
@@ -118,3 +118,22 @@ grafana-open: ## Port-forward Grafana to localhost:3001 (admin/admin)
 
 prometheus-open: ## Port-forward Prometheus to localhost:9090
 	kubectl -n monitoring port-forward svc/prometheus 9090:9090
+
+# ---- Load test (M5/M6) -------------------------------------------------------
+.PHONY: loadtest loadtest-logs loadtest-clean
+
+loadtest: ## Run the k6 storm Job (in-cluster, hits the Service). Re-runnable.
+	kubectl apply -f k8s/loadtest/00-namespace.yaml
+	kubectl create configmap k6-scripts -n loadtest \
+	  --from-file=lookup-storm.js=k8s/loadtest/lookup-storm.js \
+	  --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n loadtest delete job k6-storm --ignore-not-found
+	kubectl apply -f k8s/loadtest/10-k6-job.yaml
+	@echo "started. follow with: make loadtest-logs"
+
+loadtest-logs: ## Follow the running k6 Job logs
+	kubectl -n loadtest wait --for=condition=ready pod -l app=k6-storm --timeout=60s || true
+	kubectl -n loadtest logs -f job/k6-storm
+
+loadtest-clean: ## Remove the load-test namespace
+	kubectl delete namespace loadtest --ignore-not-found
