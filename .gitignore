@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets & local env — NEVER commit real secrets (§S2). Commit .env.example only.
+.env
+.env.local
+*.local
+
+# Logs
+*.log
+logs/
+
+# Test / coverage
+coverage/
+.vitest/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# k6 / load-test output
+*.k6-summary.json

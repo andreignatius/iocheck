@@ -242,3 +242,111 @@ Both catches correct — fixed + full consistency sweep.
 Next: begin building (milestone 1 — the Express service) once doc tidy-up confirmed.
 
 ---
+
+## Turn 11 — 2026-07-30 16:03 +08
+
+### Andre (verbatim)
+
+> let's start milestone 1 now , starting with scaffolding and then we add the code
+>
+> when appropriate let's also add .gitignore file and the .env .env.example files too
+
+### Claude (summary)
+
+Scaffolded + built milestone 1 (the Express service), verified by typecheck + unit tests.
+
+**Scaffold / config:** `package.json` (minimal, defensible deps: express, zod, pg, redis, prom-client, pino/pino-http, dotenv; dev: typescript, tsx, vitest, @types/*), `tsconfig.json` (CommonJS, strict, noUncheckedIndexedAccess), `.gitignore` (ignores `.env`, node_modules, dist, coverage), `.env.example` + `.env` (all config keys, secrets marked), `db/init.sql` (schema PK(type,value) + least-priv `iocheck_app` role §S2 + seed data).
+
+**Source (`src/`):**
+- `config.ts` — env validated with zod, fails fast, prints field names only (no secret values).
+- `logger.ts` — pino, redacts authorization / x-api-key / password.
+- `metrics.ts` — prom-client; RPS + latency histogram (buckets under 200ms SLO) + in-flight gauge + lookup-results (type/verdict only, **no value label §S8**) + cache events + `cache_up` gauge.
+- `validation.ts` — per-type zod (§S3): `net.isIP`, domain regex, sha256 64-hex; `.strict()`; max 512; **normalizeValue** (lowercase domain/hash, strip trailing dot) = anti-evasion security control.
+- `db.ts` — pg Pool (hard dep §O3), `pingDb` for readyz, conn timeout so storms fail fast.
+- `cache.ts` — redis client, **fail-open** (all ops swallow errors + flip `cache_up=0`), tight timeouts (§O3).
+- `repository.ts` — parameterized SQL (no injection), idempotent `ON CONFLICT` upsert.
+- `service.ts` — read-through lookup + **negative caching** + fail-open-to-DB; upsert invalidates cache key.
+- `auth.ts` — API-key middleware for `/ioc` (§S1), constant-time compare, key never logged.
+- `state.ts` — readiness flag (flipped on SIGTERM → readyz 503).
+- `app.ts` — express assembly: json body limit (§S3), metrics middleware, 5 endpoints (liveness process-only; **readyz = PG hard / Redis soft** §O3), **generic error handler (no stack/DB leak §S10)**.
+- `index.ts` — startup + **graceful shutdown §O2** (SIGTERM → drain flag → server.close → close pool/redis → exit within SHUTDOWN_DRAIN_MS; note preStop already slept before SIGTERM).
+- `validation.test.ts` — 13 vitest cases (normalization/evasion, per-type validity, strict/limits).
+
+**Verification:** local Node was v14/v16 (too old for tsx/vitest 2 → installed Node 20 via nvm). `tsc --noEmit` = clean (exit 0); `vitest run` = **13/13 pass**. Full end-to-end run needs Postgres+Redis → milestone 2 (Dockerfile + docker-compose).
+
+**Note:** dev/build requires **Node ≥18** (engines set); verified on Node 20.
+
+---
+
+## Turn 12 — 2026-07-30 16:04 +08
+
+### Andre (verbatim)
+
+> hi can we log down our progress in docs/journal.md and timestamp each update? and we compare it against our plan and slowly check out the completed progress?
+
+### Claude (summary)
+
+Created `docs/journal.md` — the dated build record (distinct from plan=design and transcript=chat log). Structure: (1) **status checklists vs plan** — build sequence §9 (M1 done ✅, M2–M9 pending), deliverables §8, four challenges §7; (2) **chronological log** with timestamps — Planning/M0 (T1–T10 summary) + M1 (service built + verified 13/13 tests); (3) **open items to carry forward** (cache-stampede/singleflight, `/ioc` audit log, rate-limiting decision). Will update + timestamp it as each milestone completes.
+
+---
+
+## Turn 13 — 2026-07-30 16:20 +08
+
+### Andre (verbatim)
+
+> let's pause for a bit... I just thought of something re our plan... re the PDB deadlock issue...
+>
+> i was re-reading the README section... "We'll schedule a 30-min walkthrough call where you'll show us: Spinning up the cluster from a clean state / Driving load and showing replica count climbing / Stopping load and showing it return to 2 / The actual metric your autoscaler is reading"
+>
+> the problem is that currently with min=3, we can't show "return to 2", so the demo would contradict the required checklist
+>
+> the only reason for min=3 was the PDB deadlock but that only triggers on node drains / evictions, which our demo never does... to my knowledge, autoscaler scale-down and rolling updates aren't eviction-gated so they work fine at min=2
+>
+> i'm thinking how about let's do this way... set min=2 for the demo (matches their walkthrough + the brief's minAvailable>=2)... but we keep min=3 as documented production hardening, and raise the deadlock as our "defend your min" talking point (challenge #3) ...
+>
+> can we do this: 1. ship min=2 (demo returns to 2 as asked) 2. document min=3 as the prod fix for the PDB drain-deadlock <- this knowledge is the challenge-#3 discussion but not the config value
+>
+> what are your thoughts? feel free to challenge me on this
+
+### Claude (summary)
+
+Pressure-tested the mechanism — **Andre is correct**, and he caught an imprecision in my §O4.
+
+**Verified (only the eviction API honors PDBs):** HPA/KEDA scale-down → RS deletes pods directly → **not PDB-gated**; rolling updates → governed by maxUnavailable/maxSurge, direct deletion → **not PDB-gated**; `kubectl drain` + cluster-autoscaler → eviction API → **PDB-gated (deadlock at min==minAvailable)**; spot/crash → involuntary → not gated. So the deadlock surface is *only voluntary node-level disruption*, which the demo never triggers. My earlier "rolling updates stall" was wrong — corrected.
+
+**Agreed, with two adjustments:** (1) **strengthen** — ship min=2 but annotate the manifest LOUDLY so min==minAvailable reads as deliberate (it becomes the challenge-#3 payoff, not a missed anti-pattern); (2) **soften** — drop "spike-onset absorption" as a reason for 3 (min is sized by baseline load; onset is handled by the scale target + cache). The clean story: min sized by load (=2); drain-headroom is the *only* reason to bump to 3, a prod-ops concern the demo doesn't exercise.
+
+**Decision:** **ship min=2** (matches walkthrough "return to 2" + spec; demo 2→N→2); **min=3 = documented prod hardening + challenge-#3 "defend your min" script**. Gave the talking-point script (eviction API + PDB semantics + ops implication).
+
+**Plan updated + consistency-swept:** §4c, §4d, §O4 (added eviction-API mechanism table + ship-2/prod-3), §5 checklist, §7 challenges #3/#4 (demo 2→N→2), build seq M6, Locked-decisions line. Journal entry added.
+
+---
+
+## Turn 14 — 2026-07-30 16:52 +08
+
+### Andre (verbatim)
+
+> re M1 code... i have following concerns:
+> 1. for `db/init.sql` re `CREATE ROLE iocheck_app LOGIN PASSWORD 'xxx';` can we sanitize this? we shouldn't be committing secrets in repo
+> 2. for `src/validation.ts` case 'ip': return v.toLowerCase() — IPv6 addresses can be written many different ways but mean the same number... `::1` and `0:0:0:0:0:0:0:1` would be stored as two different rows and cached under two different keys, even though they're the same machine <- can we normalize for this case as well?
+> 3. for `src/cache.ts` connectCache try/catch looks like it handles Redis being down, but the error never actually gets thrown quickly. there is a risk that the call just waits, so the catch doesn't fire. can we add `disableOfflineQueue: true` above which tells the code that if Redis isn't connected, fail the call immediately instead of putting it on hold... then the catch fires right away and you fall through to postgresql fast
+> 4. in `src/app.ts` const route = req.route?.path ?? req.path. my concern is that 404s/unmatched paths req.route is undefined, so it falls back to the raw req.path, this means that failed route requests can inflate the route values unnecessarily... when no real route matched let's not record the raw URL... instead we record a single fixed label like "unmatched"
+> 5. in `src/index.ts` for the server.close part in installGracefulShutdown function... can we add server.closeIdleConnections() right when we start shutting down?
+>
+> please let me know if you spot anything else
+
+### Claude (summary)
+
+All 5 valid; found 2 more. Fixed all 7 — typecheck clean, **15/15 tests**.
+
+1. **Committed secret** → replaced `db/init.sql` with **`db/init.sh`**: creates the least-priv role from `APP_DB_PASSWORD` (env) via `\gexec` + `format(%I,%L)`; nothing secret committed (§S2). Added `APP_DB_*` to env files.
+2. **IPv6 canonicalization** → added **`ipaddr.js`**; `normalizeValue('ip')` returns RFC-5952 canonical form, so `::1` / `0:0:0:0:0:0:0:1` / `::0001` collapse to `::1` (one row, one cache key). +2 tests.
+3. **Redis fail-open** → **`disableOfflineQueue: true`** (fail commands fast when disconnected) + **background reconnect** (node-redis doesn't auto-retry a failed *initial* connect → added bounded retry so degraded→healthy recovers). Clear timer on close.
+4. **Unmatched-route cardinality** → label collapses to **`unmatched`** instead of raw `req.path`.
+5. **`closeIdleConnections()`** at drain start + **`closeAllConnections()`** on force-timeout.
+6. *(Claude found)* **In-flight gauge leak** on client abort → finalize-once on `finish` OR `close`.
+7. *(Claude found)* **Oversized body 500→413** (+ 400 for malformed JSON) in the error handler (§S3).
+
+Files: `db/init.sh` (new,+x), removed `db/init.sql`, `.env`/`.env.example`, `package.json` (+ipaddr.js), `src/{validation,cache,app,index}.ts`, `src/validation.test.ts`. Journal updated.
+
+---

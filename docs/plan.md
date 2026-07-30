@@ -137,19 +137,24 @@ CREATE TABLE ioc (
 The take-home is **fully self-contained**: *we* build the load generator (k6); there is no "their
 load" and no integration with StrongKeep systems. The only integration surface is the **API
 contract** (`/lookup`, `/ioc` shapes). "Verify" = our k6 drives our service on our kind cluster and
-we show replicas climb, p99 holds < 200ms, then scale back to the floor (**3**, see §O4). So max is
+we show replicas climb, p99 holds < 200ms, then scale back to **2** (§O4). So max is
 defended by **stating an assumption + showing the arithmetic**:
 1. **Measure per-pod capacity** (the one hard number): single-pod k6 → RPS where p99 ≈ 200ms (e.g. ~400 RPS/pod).
 2. **State an assumed peak + justify:** pick a baseline RPS (mid-size SOC), apply the brief's ~10× storm → peak ≈ 10× baseline.
 3. **Divide with headroom:** `max = ceil(peak_RPS / per_pod_capacity × safety_factor)`.
-- **min = 3** (NOT 2) — floors above `PDB minAvailable: 2` for disruption headroom (§O4), plus spike-onset
-  absorption (§O1) and HA across nodes (§O5).
+- **min = 2 (shipped)** — sized by baseline load; matches the walkthrough's "return to 2" and satisfies
+  `PDB minAvailable >= 2`. **min = 3 is the documented *production* floor** (drain headroom) — knowledge for
+  the challenge-#3 defense, NOT the shipped value (§O4).
 
-> **⚠ Deliberate deviation from the brief — call this out proactively on the walkthrough.** The brief
-> illustrates "return to **2**" and `min=2, max=8`. I floor at **3**, because `min == PDB.minAvailable`
-> gives a **zero disruption budget** (node drains / rolling updates deadlock — §O4). Flooring at 3 buys
-> one pod of disruption headroom, absorbs spike onset while scaling catches up, and keeps ≥2 pods across
-> nodes for HA. So my demo shows **3 → N → 3**, not 3 → N → 2 — a conscious operability choice, not a miss.
+> **⚠ Deliberate min choice — the challenge-#3 "defend your min" payoff.** Ship **min=2** with
+> `PDB minAvailable=2`: this matches the walkthrough's return-to-2 and the spec literally, and the demo
+> shows **2 → N → 2**. The catch to *name proactively*: `min == PDB.minAvailable` is a **zero
+> voluntary-disruption budget** — a node drain / cluster-autoscaler scale-in (eviction API) would deadlock.
+> It does **not** affect the demo: HPA scale-down and rolling updates delete pods *directly* (not via
+> eviction), so they work fine at 2 (§O4). **In production I'd floor at min=3** for one pod of drain
+> headroom (node upgrades don't hang), keeping minAvailable=2. So: **2 for the demo + literal spec, 3 as
+> the operable prod floor** — a deliberate, documented choice. Annotate the manifest loudly so it reads as
+> intentional, not as the classic min==minAvailable mistake.
 
 ### 4e. The downstream ceiling on max (the sophisticated cap — protects the shared DB)
 Max replicas is the **lower of**: (a) the load-derived need from §4d, and (b) the point where pod
@@ -166,8 +171,10 @@ triggers:
   metadata:
     query: sum(rate(http_requests_total{app="iocheck"}[1m])) / count(kube_pod_info{...})
     threshold: "<empirical RPS/pod>"
-minReplicaCount: 3          # NOT 2 — see §O4: min==PDB.minAvailable deadlocks disruptions.
-                            #   min=3 + PDB minAvailable=2 → 1 pod of disruption headroom
+minReplicaCount: 2          # SHIPPED=2: matches walkthrough "return to 2" + spec minAvailable>=2.
+                            #   NOTE (challenge #3): min==PDB.minAvailable = zero *eviction* disruption
+                            #   budget; harmless for demo (scale-down/rollouts aren't eviction-gated),
+                            #   but in PROD floor at 3 for node-drain headroom (§O4).
 maxReplicaCount: 10         # defend: min(load-derived need, DB-connection ceiling §4e)
 fallback:                   # challenge extra: what if Prometheus is down?
   failureThreshold: 3
@@ -186,7 +193,7 @@ surge a new pod up before removing an old one, so a rollout never dips below `PD
 
 ## 5. Kubernetes resources (required checklist)
 
-- [ ] **Deployment** — iocheck, `replicas: 3` baseline (§O4), `rollingUpdate: maxUnavailable:0 / maxSurge:1`
+- [ ] **Deployment** — iocheck, `replicas: 2` baseline (§O4; prod-floor 3 documented), `rollingUpdate: maxUnavailable:0 / maxSurge:1`
 - [ ] **Service** — ClusterIP fronting the pods
 - [ ] **Graceful shutdown** — SIGTERM handler + preStop sleep + drain + pool close, `terminationGracePeriodSeconds: 30` (§O2)
 - [ ] **topologySpreadConstraints / anti-affinity** + **multi-node kind** — so HA is real, not theater (§O5)
@@ -194,7 +201,7 @@ surge a new pod up before removing an old one, so a rollout never dips below `PD
 - [ ] **Redis** — Deployment (ephemeral cache; no persistence needed)
 - [ ] **Probes on iocheck** — startup (slow first-load grace) / liveness (`/healthz`, **process-only, no deps**) /
       readiness (`/readyz` → **Postgres hard-dep; Redis soft/fail-open**, §O3)
-- [ ] **PodDisruptionBudget** — `minAvailable: 2` (with baseline replicas=3 → non-zero disruption budget, §O4)
+- [ ] **PodDisruptionBudget** — `minAvailable: 2` (shipped replicas=2 → zero *eviction* budget; safe for demo, prod-floor 3 documented §O4). **Annotate the manifest loudly.**
 - [ ] **Resource requests + limits** on *every* container (CPU limit ~1 core/pod shapes the CPU story)
 - [ ] **KEDA ScaledObject** — RPS/pod trigger + fallback + scale-down window
 - [ ] metrics-server (install w/ `--kubelet-insecure-tls`) — needed to demo the CPU-HPA baseline
@@ -221,8 +228,8 @@ surge a new pod up before removing an old one, so a rollout never dips below `PD
 |---|---|---|
 | 1 | Why CPU HPA is wrong (measured) | §4a + Grafana "CPU flat / RPS+p99 spike" panel |
 | 2 | Make pods share load | k6 many-connections + **keep-alive pinning** fix; show even per-pod RPS |
-| 3 | Autoscaler up *and* down, defend min/max | §4c KEDA (scale-up fast, scale-down windowed); **min=3** (PDB-headroom §O4), max=capacity math (§4e/§O8) |
-| 4 | Prove it with a reproducible test | §6 k6 script + Makefile target; demo **3→N→3** (floored at 3, §O4 — flag deviation from brief's "return to 2") |
+| 3 | Autoscaler up *and* down, defend min/max | §4c KEDA (scale-up fast, scale-down windowed); **ship min=2** (matches spec/walkthrough) + defend via the eviction/PDB "prod-floor 3" story (§O4); max=capacity math (§4e/§O8) |
+| 4 | Prove it with a reproducible test | §6 k6 script + Makefile target; demo **2→N→2** (matches walkthrough's "return to 2") |
 
 ### Challenge #2 deep note (the hidden trap)
 HTTP **keep-alive can pin many requests to one TCP connection → one pod**, starving others and
@@ -324,13 +331,31 @@ Pod deleted → Terminating:
 - **[build] Comes with fail-open:** **cache-stampede / thundering-herd** protection when Redis dies or a hot key expires (all requests hit PG at once) → **request coalescing (singleflight)** + **jittered TTLs** + **tight Redis timeouts** (fail-open fast, don't block on slow Redis).
 - **[build] Principle:** **liveness (`/healthz`) is process-only, NEVER checks deps** — else a dep blip restarts every pod (restart storm). Readiness removes from LB (safe); liveness restarts (dangerous).
 
-### O4. PDB deadlock — `minAvailable == replicas` blocks all voluntary disruption
-- **Problem:** replicas=2 + PDB minAvailable=2 → **zero disruption budget** → node drains hang, rolling updates stall (can never remove a pod). Brief requires minAvailable≥2, so the floor must rise.
-- **[build] Fix:** **min replicas = 3** + **PDB minAvailable = 2** → 1 pod of headroom (drains/updates work, 2 stay up). Pair with Deployment **`maxUnavailable: 0 / maxSurge: 1`** (surge up before removing → never dip below PDB).
+### O4. PDB semantics — `minAvailable == replicas` = zero *eviction* disruption budget (ship 2, prod-floor 3)
+- **Precise mechanism (only the eviction API honors PDBs):**
+
+  | Operation | Pod removal path | PDB-gated? |
+  |---|---|---|
+  | KEDA/HPA scale-down | controller lowers `spec.replicas` → RS deletes directly | ❌ No |
+  | Rolling update | RS deletes per `maxUnavailable`/`maxSurge` — direct | ❌ No |
+  | `kubectl drain` / node maintenance | **eviction API** | ✅ **deadlock at min==minAvailable** |
+  | Cluster-autoscaler node scale-in | eviction API | ✅ deadlock |
+  | Spot/node crash | involuntary — pod just dies | ❌ (not gated) |
+
+- **So the deadlock surface is *only voluntary node-level disruption*** — which the demo never triggers.
+  Earlier plan text ("rolling updates stall") was imprecise: rolling updates are governed by
+  `maxUnavailable`/`maxSurge`, not the PDB.
+- **[build] SHIP min = 2** + PDB minAvailable = 2 — matches the walkthrough's "return to 2" and the spec.
+  Safe for the demo because scale-down and rollouts aren't eviction-gated. Keep Deployment
+  **`maxUnavailable: 0 / maxSurge: 1`** (protects availability *during deploys*, independent of the PDB).
+- **[writeup + challenge #3] PROD floor = 3** — `min == PDB.minAvailable` is a zero *voluntary-disruption*
+  budget: a node drain would deadlock. In prod, floor at 3 for one pod of drain headroom (node upgrades
+  don't hang), keeping minAvailable=2. Ship 2 (demo/spec), recommend 3 (operability) — annotate the
+  manifest loudly so it reads as intentional, not the classic min==minAvailable mistake.
 - **[build]** `fallback: replicas: 4` is the **metric-source-down** state — unrelated to baseline min; don't conflate.
 
 ### O5. HA that's real, not theater — spreading + multi-node
-- **[build]** `topologySpreadConstraints` / podAntiAffinity so the 3 pods don't co-locate on one node (a node loss would otherwise breach the PDB instantly). Run a **multi-node kind cluster** to actually *demonstrate* HA + load-sharing (challenge #2). Single-node kind hides this.
+- **[build]** `topologySpreadConstraints` / podAntiAffinity so the baseline pods don't co-locate on one node (a node loss would otherwise breach the PDB instantly). Run a **multi-node kind cluster** to actually *demonstrate* HA + load-sharing (challenge #2). Single-node kind hides this.
 
 ### O6. Observability completeness — golden signals (RED/USE), not just latency+RPS
 - **[build]** add **errors** (4xx/5xx rate) and **saturation** (pg-pool utilization, **event-loop lag**, Redis/PG conn counts) + **cache hit-ratio**. Richer than CPU — and reinforces "CPU is the wrong signal" by showing saturation ≠ CPU.
@@ -346,7 +371,7 @@ Pod deleted → Terminating:
 - **[build]** readiness-gated rollout (bad version never takes traffic) + `kubectl rollout undo` fast path + revisionHistory. **[writeup]** canary.
 - **[build] Chaos as proof:** during the load test, **kill a pod and kill Redis** to *demonstrate* drain (§O2) + fail-open degradation (§O3). Far stronger evidence than a happy-path run — and directly showcases resilience on the call.
 
-**Locked decisions from this round:** min replicas = **3** · `/readyz` gates on **Postgres only** (Redis soft/fail-open) · Deployment **`maxUnavailable:0 / maxSurge:1`**.
+**Locked decisions:** **ship min replicas = 2** (matches walkthrough + spec; prod-floor 3 documented as the challenge-#3 defense) · `/readyz` gates on **Postgres only** (Redis soft/fail-open) · Deployment **`maxUnavailable:0 / maxSurge:1`**.
 
 ---
 
@@ -366,10 +391,10 @@ Pod deleted → Terminating:
 
 1. **Service** — Express + zod (deep per-type validation §S3 + normalization), API-key auth on `/ioc` (§S1), prom-client metrics (type/verdict labels only §S8), read-through cache w/ negative-caching, pg pool. Unit-test cache hit/miss/invalidate + validation.
 2. **Containerize** — Dockerfile (multi-stage, distroless/alpine, non-root `USER`, §S4), docker-compose for local dev (service + pg + redis, creds via env).
-3. **Cluster** — **multi-node** kind up + **Calico/Cilium** (NetworkPolicy enforces §S5), Makefile; manifests: Deployment (replicas=3, maxUnavailable:0/maxSurge:1) / Service / PDB(minAvailable=2) / probes (**liveness process-only, readyz=PG-hard/Redis-soft §O3**) / limits + **graceful shutdown (§O2)** + **topology spread (§O5)** + **securityContext (§S4)** + **Secrets (§S2)** + **NetworkPolicy default-deny (§S5)**, Postgres, Redis.
+3. **Cluster** — **multi-node** kind up + **Calico/Cilium** (NetworkPolicy enforces §S5), Makefile; manifests: Deployment (replicas=2 shipped, maxUnavailable:0/maxSurge:1) / Service / PDB(minAvailable=2, annotated §O4) / probes (**liveness process-only, readyz=PG-hard/Redis-soft §O3**) / limits + **graceful shutdown (§O2)** + **topology spread (§O5)** + **securityContext (§S4)** + **Secrets (§S2)** + **NetworkPolicy default-deny (§S5)**, Postgres, Redis.
 4. **Observability** — Prometheus scrape + Grafana dashboards (latency, RPS, **errors + saturation + cache hit-ratio + TTR** §O1/§O6) + metrics-server + KEDA installed.
 5. **Baseline evidence** — CPU-based HPA + k6 spike → capture "CPU flat, no scale, p99 blows past 200ms" → **challenge #1**.
-6. **Real autoscaler** — KEDA ScaledObject on RPS/pod, empirical target, up-fast/down-slow + fallback → demo **3→N→3** (floored at 3, §O4) → **challenges #3/#4**.
+6. **Real autoscaler** — KEDA ScaledObject on RPS/pod, empirical target, up-fast/down-slow + fallback → demo **2→N→2** (matches walkthrough; §O4) → **challenges #3/#4**.
 7. **Load-sharing** — prove even per-pod distribution; address keep-alive → **challenge #2**.
 8. **Resilience / chaos** — kill a pod + kill Redis under load → demonstrate graceful drain (§O2) + fail-open degradation (§O3); capture as evidence.
 9. **Wrap** — writeup, README, Makefile polish, transcript cleanup.
