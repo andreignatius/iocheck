@@ -427,3 +427,174 @@ Authored the full k8s manifest set, deployed to kind, **verified live** (`logs/M
 **Live verification:** rollout 2/2; **pods spread across worker+worker2** (§O5); readyz db+cache true; lookup + normalized upsert (`K8S-Evil.COM`→`k8s-evil.com`) work; **PDB ALLOWED DISRUPTIONS=0** (§O4 confirmed live); **NetworkPolicy segmentation PROVEN** — non-iocheck busybox pod BLOCKED from postgres:5432 + redis:6379 (§S5, Calico enforcing). All under restricted PSS. Evidence `logs/M3-k8s.log`; reusable `scripts/k8s-verify.sh`. Journal: **M3 ✅**, deliverable "Source+manifests+Dockerfile+Makefile" ✅.
 
 ---
+
+## Turn 19 — 2026-07-30 19:33 +08
+
+### Andre (verbatim)
+
+> looks good! let's work on M4 next
+>
+> M4 looks to be really crucial because we need to effectively demonstrate why CPU-based HPA is wrong... and use prometheus and grafana to illustrate that.
+>
+> understand that we have documented a plan but can you walk me through in a nutshell what you intend to do and tell me what are the potential pitfalls that we should be aware of?
+>
+> perhaps after you list them we can discuss before implementation?
+
+### Claude (summary)
+
+Walked through M4 (discussion, not implementation). **Nutshell:** two separate metric pipelines — metrics-server → CPU-HPA (M5 baseline); Prometheus → Grafana (evidence) + KEDA (M6). Goal of M4 = a dashboard that can show **CPU flat while RPS/p99 spike**, wired for M5/M6.
+
+**Pitfalls listed (priority order):**
+1. **(crux) CPU-request sizing + load design can invert the thesis** — HPA util = usage÷request; too-low request → util >70% → CPU HPA *would* scale. Must make latency **I/O-bound** (cache-miss-heavy load → PG pool contention → queue) so p99 breaches 200ms while CPU stays <70% of request.
+2. **metrics-server needs `--kubelet-insecure-tls` on kind** — else CPU `<unknown>` → baseline fails for the wrong reason.
+3. **Latency histogram tops at 2s** — team saw p99 2–3s → widen buckets (add 3/5s); small `metrics.ts` change + redeploy.
+4. **Heavy monitoring stack competes for CPU** (ironic on kind) → prefer minimal.
+5. **CPU-in-dashboard needs cadvisor scrape** (RBAC/TLS on kind) or kube-prometheus-stack.
+6. **Reproducibility** — pin/vendor chart versions; provision Grafana dashboards as committed ConfigMaps (not clicked).
+7. **Wiring** — verify Prometheus targets UP; NetworkPolicy allows scrape (3000 open, ok); KEDA needs exact Prometheus DNS.
+
+**Decisions offered:** D1 stack (minimal vs kube-prometheus-stack), D2 how-to-show-CPU (single overlay panel vs kubectl), D3 widen buckets. Asked Andre to confirm before building.
+
+---
+
+## Turn 20 — 2026-07-30 19:33 +08
+
+### Andre (verbatim)
+
+> re D1: agree, go minimal
+> D2: go with (a), the single overlay panel... but sequence it so it can't block us
+> D3: we widen buckets yes
+> agree with pitfall #1 framing
+> btw just to check right... have we discussed re how to mock test or stress test it? it's k6 right?
+> also gentle reminder to update the transcript!
+
+### Claude (summary)
+
+Confirmed **k6** is the stress tool (decided in planning; deliverable #3), built in **M5** (baseline) + reused **M6**.
+
+**k6 design nutshell:** stages = baseline → 10× spike → sustain → ramp-down; `thresholds p(99)<200`; **cache-MISS-heavy** (distinct/random IOC values → PG pool saturates → I/O-bound latency, CPU low = pitfall #1 realized); plus a single-pod **calibration** run to set the KEDA target + max-replica math.
+
+**Key k6 pitfall flagged:** do NOT drive load via `kubectl port-forward` (tunnels to ONE pod, bypasses Service load-balancing → useless for autoscaling + hides challenge #2). Run k6 **in-cluster as a Job hitting `http://iocheck:3000`** (Service → kube-proxy LB across pods).
+
+**Locked M4 package:** minimal Prometheus+Grafana (pinned + provisioned-as-code) · widen histogram buckets (D3) · metrics-server w/ `--kubelet-insecure-tls` · KEDA pointed at Prometheus · **cadvisor overlay as a non-blocking enhancement** (D2 caveat: core dashboard [RPS/p99/replicas] first, CPU-overlay added after, falls back to `kubectl get hpa`/`top` if fiddly) · k6 built in M5 hitting the Service in-cluster. Ready to build M4 on Andre's go.
+
+---
+
+## Turn 21 — 2026-07-30 20:02 +08
+
+### Andre (verbatim)
+
+> let's do M4 and start with step 1
+
+### Claude (summary)
+
+Built + verified **M4 step 1 (observability core)** — evidence `logs/M4-observability.log`.
+
+- **D3:** widened histogram buckets to `…1,2,3,5` (`metrics.ts`); bumped **iocheck:0.1.1**, rebuilt/loaded/rolled out; confirmed `le=3/5` present.
+- **metrics-server:** vendored v0.7.2 + `--kubelet-insecure-tls`; `kubectl top` works (iocheck idle ~13m CPU).
+- **Prometheus:** minimal, pinned v2.54.1, RBAC + pod-SD scrape config (app=iocheck:3000, 5s); both pods scraped **UP**; RPS/p99/replicas queries return.
+- **Grafana:** pinned 11.2.0, provisioned datasource + **dashboard-as-code** (RPS / p99 w/ 200ms threshold / in-flight / replicas via `count(up{job=iocheck}==1)`); verified datasource+dashboard + Grafana→Prom query.
+- **KEDA:** vendored v2.17.1 (k8s 1.32-compatible); all pods Ready, **external-metrics APIService `Available=True`**.
+- Makefile: `metrics-server`/`prometheus`/`grafana`/`keda`/`observability` targets + open helpers.
+- **Step 2 next (non-blocking):** cadvisor scrape → CPU on the same overlay panel.
+
+---
+
+## Turn 22 — 2026-07-30 20:12 +08
+
+### Andre (verbatim)
+
+> [screenshot: Grafana welcome page]
+> i ran
+> make grafana-open
+> and checked http://localhost:3001
+> attached is the screenshot
+> i don't see iocheck - overview?
+
+### Claude (summary)
+
+Explained: the Grafana home page only lists *starred* + *recently-viewed* dashboards; the dashboard IS provisioned (confirmed via API). Reach it via direct link http://localhost:3001/d/iocheck-overview, the ☰ → Dashboards menu, or the search bar. Heads-up: panels flat until load (M5 k6); gave a curl-loop pulse to see RPS move; noted the em-dash slug and offered to rename.
+
+---
+
+## Turn 23 — 2026-07-30 20:15 +08
+
+### Andre (verbatim)
+
+> [screenshot: iocheck overview dashboard rendering; RPS panel shows /readyz ~0.4, /healthz ~0.2, /metrics; /lookup flat]
+> looks ok now! http://localhost:3001/d/iocheck-overview is OK and as per screenshot attached
+>
+> when i run
+> kubectl -n iocheck port-forward svc/iocheck 8080:3000 &
+> while true; do curl -s -XPOST localhost:8080/lookup -H 'content-type: application/json' \
+>   -d '{"type":"ip","value":"203.0.113.7"}' >/dev/null; done
+>
+> below output:
+> [1] 22295
+> Forwarding from 127.0.0.1:8080 -> 3000
+> Forwarding from [::1]:8080 -> 3000
+> Handling connection for 8080
+> (... "Handling connection for 8080" repeated ...)
+
+### Claude (summary)
+
+Explained what he's seeing: the three flat RPS lines are cluster traffic, not his loop — `/readyz` ~0.4/s (readiness probe, 5s × 2 pods), `/healthz` ~0.2/s (liveness, 10s × 2 pods), `/metrics` (Prom scrape 5s). His `/lookup` climbs once the loop runs. **Key point (pitfall #1 live):** the loop hammers the *same* value → cache HIT → cheap + fast → RPS rises but **p99 stays tiny**; M5's k6 uses distinct/random values → cache MISSES → PG pool contention → the p99 spike with low CPU. Gave clean stop commands (Ctrl-C + `kill %1`). Offered step 2 (cadvisor CPU overlay) vs jump to M5.
+
+---
+
+## Turn 24 — 2026-07-30 20:19 +08
+
+### Andre (verbatim)
+
+> let's do step 2 now
+
+### Claude (summary)
+
+Built **M4 step 2 (cadvisor CPU overlay)** + renamed dashboard.
+
+- **cadvisor scrape:** added `cadvisor` job to Prometheus (node SD → API-server proxy, SA bearer token + skip-verify; RBAC already covered nodes/proxy + `/metrics/cadvisor`). Restarted Prom → 3 node targets UP → `container_cpu_usage_seconds_total{namespace=iocheck}` flowing (~9m/pod idle).
+- **Dashboard (v2, title → "iocheck overview", em-dash dropped):** added **CPU per pod (millicores)** panel (70m HPA-trigger line) + headline **"Challenge #1 — CPU % of request vs p99"** dual-axis overlay (CPU% left w/ 70% threshold, p99 right). Verified all 6 panels load; CPU queries return (16.9% idle, 2 pod series).
+- **M4 complete.** Visual money-shot only fills in under load → M5's k6. (Panel titles still have em-dashes — cosmetic, offered to sweep.)
+
+---
+
+## Turn 25 — 2026-07-30 20:24 +08
+
+### Andre (verbatim)
+
+> hey btw the transcript...
+>
+> [quoted the Turn 22 block with the parenthesized "(after confirming the dashboard renders...)" pseudo-verbatim]
+>
+> ^ is not really verbatim... :P
+
+### Claude (summary)
+
+Correct — that was a paraphrase, and two screenshot turns hadn't been logged at all. Reconstructed faithfully: split into **Turn 22** (grafana-open / "i don't see iocheck - overview?"), **Turn 23** ("looks ok now!" + the port-forward/curl-loop output), **Turn 24** (verbatim "let's do step 2 now"). Screenshot turns transcribed verbatim with `[screenshot: …]` markers since the transcript is text-only. Logged this correction as Turn 25.
+
+---
+
+## Turn 26 — 2026-07-30 20:40 +08
+
+### Andre (verbatim)
+
+> hold up a moment... referencing back to the plan doc
+>
+> ### 4c. KEDA ScaledObject (shape)
+> ```yaml
+> triggers:
+> - type: prometheus
+>   metadata:
+>     query: sum(rate(http_requests_total{app="iocheck"}[1m])) / count(kube_pod_info{...})
+> ```
+> can we double check the query ? for e.g. i think dividing by pod count is a self-defeating feedback loop
+>
+> think we should take a look at this first before moving on to M5 etc
+
+### Claude (summary)
+
+**Andre is right.** KEDA's Prometheus scaler defaults to `metricType: AverageValue` → HPA computes `desiredReplicas = ceil(query / threshold)` with **no currentReplicas term**. Dividing the query by pod count normalizes *twice* → oscillation (total=800, thr=100: N=2→q400→d4; N=4→q200→d2; flaps forever). Since incoming RPS is client-driven (not capacity-driven), the **total** is stable as N changes → the correct signal.
+
+**Fix (plan §4c updated):** `query = sum(rate(http_requests_total{namespace="iocheck", route="/lookup"}[1m]))` (TOTAL), `threshold` = per-pod target, explicit `metricType: AverageValue`, `serverAddress` = prometheus svc DNS. **Bonus:** `kube_pod_info` doesn't exist (no KSM in minimal stack); added `route="/lookup"` filter so probe/scrape traffic doesn't inflate the signal. Rule: *"query=aggregate, threshold=per-pod; KEDA divides; pre-dividing double-normalizes → oscillates."* Applied in M6. Plan + journal updated.
+
+---

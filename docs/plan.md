@@ -165,12 +165,24 @@ the database** (and/or fronted by a pooler like PgBouncer if we needed to go hig
 explicitly in the writeup — it shows autoscaling has a downstream limit.
 
 ### 4c. KEDA ScaledObject (shape)
+> **Query = TOTAL, threshold = per-pod. Do NOT divide by pod count in the query.**
+> KEDA's Prometheus scaler defaults to `metricType: AverageValue`, where the HPA computes
+> `desiredReplicas = ceil(queryResult / threshold)` — there is no `currentReplicas` term, so the
+> threshold already does the per-pod normalization. Pre-dividing by replica count normalizes *twice*
+> and **oscillates**: e.g. total=800, threshold=100 → N=2 gives query=400→desired=4; N=4 gives
+> query=200→desired=2; N=2 again → flaps forever. Because incoming RPS is client-driven (not
+> capacity-driven), the *total* is stable as N changes → the correct, non-oscillating signal.
+> Also: filter to `route="/lookup"` so constant probe/scrape traffic (`/readyz`,`/healthz`,`/metrics`)
+> doesn't inflate the signal. (And `kube_pod_info` isn't available — no kube-state-metrics in the minimal stack.)
+
 ```yaml
 triggers:
 - type: prometheus
+  metricType: AverageValue          # explicit: makes the TOTAL-query correct (HPA divides by threshold)
   metadata:
-    query: sum(rate(http_requests_total{app="iocheck"}[1m])) / count(kube_pod_info{...})
-    threshold: "<empirical RPS/pod>"
+    serverAddress: http://prometheus.monitoring.svc:9090
+    query: sum(rate(http_requests_total{namespace="iocheck", route="/lookup"}[1m]))  # TOTAL lookup RPS
+    threshold: "<empirical per-pod RPS>"   # desired = ceil(total / threshold)
 minReplicaCount: 2          # SHIPPED=2: matches walkthrough "return to 2" + spec minAvailable>=2.
                             #   NOTE (challenge #3): min==PDB.minAvailable = zero *eviction* disruption
                             #   budget; harmless for demo (scale-down/rollouts aren't eviction-gated),

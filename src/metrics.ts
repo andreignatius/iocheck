@@ -24,8 +24,9 @@ export const httpRequestDuration = new Histogram({
   name: 'http_request_duration_seconds',
   help: 'HTTP request latency in seconds',
   labelNames: ['route', 'method', 'status'] as const,
-  // Buckets clustered under the 200ms SLO so p95/p99 near the threshold are readable.
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1, 2],
+  // Buckets clustered under the 200ms SLO so p95/p99 near the threshold are readable,
+  // and extended to 3s/5s so an I/O-bound spike (team saw p99 2-3s) is visible not clipped.
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1, 2, 3, 5],
   registers: [registry],
 });
 

@@ -1,0 +1,6 @@
+# Monitoring stack lives in its own namespace (no restricted PSS here — the stock
+# Prometheus/Grafana images aren't hardened; only the iocheck namespace is locked down).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

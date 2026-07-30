@@ -1,0 +1,36 @@
+# iocheck M4 (step 1) — observability core verification
+# captured: 2026-07-30 20:02 +08
+# reproduce: make observability && make keda(vendored applied)  [see Makefile + k8s/]
+
+== metrics-server: kubectl top (CPU metrics flowing; iocheck idle ~10m => why CPU-HPA won't fire) ==
+NAME                    CPU(cores)   CPU(%)   MEMORY(bytes)   MEMORY(%)   
+iocheck-control-plane   244m         3%       1146Mi          14%         
+iocheck-worker          197m         2%       945Mi           12%         
+iocheck-worker2         152m         1%       862Mi           11%         
+
+NAME                     CPU(cores)   MEMORY(bytes)   
+iocheck-5b659699-99cjh   13m          25Mi            
+iocheck-5b659699-rglzd   14m          31Mi            
+postgres-0               11m          28Mi            
+redis-6679549cd-ct6lb    14m          9Mi             
+
+== observability + KEDA pods ==
+NAME                          READY   STATUS    RESTARTS   AGE
+grafana-5f947f7657-kphds      1/1     Running   0          5m13s
+prometheus-6f4984bf87-44hq4   1/1     Running   0          10m
+
+NAME                                      READY   STATUS    RESTARTS        AGE
+keda-admission-6dbcb9fc7c-9qcv2           1/1     Running   0               3m9s
+keda-metrics-apiserver-64566dbb6b-jwckh   1/1     Running   0               3m9s
+keda-operator-56f44c59d-wpkbn             1/1     Running   1 (2m53s ago)   3m9s
+
+== KEDA external metrics APIService ==
+Available=True
+
+== Prometheus: iocheck targets ==
+  iocheck-5b659699-99cjh: up
+  iocheck-5b659699-rglzd: up
+
+== Grafana: datasource + dashboard provisioned as code ==
+  datasource: [('Prometheus', 'http://prometheus.monitoring.svc:9090')]
+  dashboard:  ['iocheck — overview']

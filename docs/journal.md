@@ -10,7 +10,7 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 - [x] **M1 — Service** (Express + zod + metrics + read-through cache + auth + graceful shutdown) — *2026-07-30*
 - [x] **M2 — Containerize** (Dockerfile, docker-compose: service + pg + redis) — *2026-07-30; runs end-to-end*
 - [x] **M3 — Cluster** (multi-node kind + Calico; full manifests, deployed + verified) — *2026-07-30*
-- [ ] **M4 — Observability** (Prometheus scrape + Grafana dashboards + metrics-server + KEDA)
+- [x] **M4 — Observability** (Prometheus + Grafana + metrics-server + KEDA; cadvisor CPU overlay) — *2026-07-30*
 - [ ] **M5 — Baseline evidence** (CPU-HPA + k6 spike → "CPU flat, no scale, p99 blows past 200ms" → challenge #1)
 - [ ] **M6 — Real autoscaler** (KEDA RPS/pod, empirical target, up-fast/down-slow + fallback → demo 2→N→2 → challenges #3/#4)
 - [ ] **M7 — Load-sharing** (even per-pod distribution; keep-alive → challenge #2)
@@ -133,6 +133,28 @@ Authored full k8s manifests and deployed to kind; **verified live** (evidence: `
 - **Plumbing:** `k8s/secret.example.yaml` (template; real Secret via `make secret` from `.env`, never committed §S2); Makefile `secret`/`deploy`/`undeploy` + versioned `IMAGE=iocheck:0.1.0`.
 - **Live verification:** rollout 2/2; **iocheck pods spread across worker + worker2** (§O5); postgres/redis Running; **readyz db+cache true**; lookup + **normalized upsert** (`K8S-Evil.COM`→`k8s-evil.com`) work; **PDB ALLOWED DISRUPTIONS = 0** (zero eviction budget by design §O4, confirmed live); **NetworkPolicy segmentation PROVEN** — a non-iocheck busybox pod is **BLOCKED** from postgres:5432 and redis:6379 (§S5; Calico enforcing, kindnet wouldn't). All under restricted PSS.
 - Evidence: `logs/M3-k8s.log`; reusable `scripts/k8s-verify.sh`.
+
+### 2026-07-30 20:02 — Milestone 4 step 1: observability core ✅ (verified)
+Built + verified the observability core (evidence: `logs/M4-observability.log`).
+- **D3 buckets widened** — `metrics.ts` histogram now `…1,2,3,5` (so a 2–3s p99 isn't clipped); bumped to **iocheck:0.1.1** (immutable tag), rebuilt/loaded/rolled out; confirmed `le="3"`,`le="5"` present.
+- **metrics-server** — vendored `k8s/metrics-server-v0.7.2.yaml` + patched `--kubelet-insecure-tls` (kind); `kubectl top` works (iocheck idle ~13m → the reason CPU-HPA won't fire under I/O-bound load).
+- **Prometheus** (minimal, `k8s/monitoring/10-prometheus.yaml`) — SA+ClusterRole (pods/nodes/cadvisor), scrape config (pod SD, keep app=iocheck:3000, 5s interval), pinned `prom/prometheus:v2.54.1`; **both iocheck pods scraped UP**; queries (RPS/p99/replicas) return.
+- **Grafana** (`20-grafana.yaml`, pinned `grafana/grafana:11.2.0`) — provisioned datasource (uid=prometheus) + **dashboard-as-code** (`grafana-dashboards/iocheck-overview.json`: RPS, p99 w/ 200ms threshold line, in-flight, replicas via `count(up{job=iocheck}==1)`); anonymous viewer on; verified datasource+dashboard load + end-to-end Grafana→Prom query.
+- **KEDA** — vendored `k8s/keda-2.17.1.yaml` (v2.17 supports k8s ~1.30–1.32); all pods Ready, **external-metrics APIService `Available=True`** (ready for the M6 Prometheus scaler).
+- **Makefile**: `metrics-server`/`prometheus`/`grafana`/`keda`/`observability` + `grafana-open`/`prometheus-open`.
+- **Step 2 (next, non-blocking):** cadvisor scrape → fold container **CPU** into the same Grafana overlay (RPS/p99/replicas/CPU on one panel). Core stands without it (`kubectl top`/HPA as fallback).
+
+### 2026-07-30 20:19 — Milestone 4 step 2: cadvisor CPU overlay ✅
+- **Prometheus cadvisor scrape** — added a `cadvisor` job (node SD → API-server proxy `/api/v1/nodes/<n>/proxy/metrics/cadvisor`, bearer token + `insecure_skip_verify`; RBAC already granted nodes/proxy + `/metrics/cadvisor`). Restarted Prometheus → 3 node targets UP → `container_cpu_usage_seconds_total{namespace=iocheck}` available (~9m/pod idle).
+- **Dashboard updated** (`iocheck-overview.json`, now v2, **title de-em-dashed → "iocheck overview"**): added **CPU per pod (millicores)** panel w/ 70m HPA-trigger threshold line, and the headline **"Challenge #1 — CPU % of request vs p99"** dual-axis overlay (CPU% left w/ 70% threshold, p99 right) — the panel that IS the challenge-#1 evidence. Recreated CM + restarted Grafana → all 6 panels load; CPU queries return (16.9% idle, 2 pod series).
+- **M4 fully complete.** Note: the *visual* money-shot (CPU flat while p99 spikes) is only populated under load → captured in **M5** with k6. Panel titles still contain em-dashes (cosmetic; offered to sweep).
+
+### 2026-07-30 20:40 — Plan fix: KEDA query feedback-loop (Andre catch, pre-M6)
+Andre flagged the draft §4c query `sum(rate(...)) / count(kube_pod_info)` as a self-defeating feedback loop. **Confirmed correct.**
+- **Mechanism:** KEDA Prometheus scaler defaults to `metricType: AverageValue` → HPA does `desired = ceil(query / threshold)` (NO currentReplicas term). Dividing the query by pod count normalizes *twice* → oscillation (total 800, thr 100: N=2→q400→d4; N=4→q200→d2; flap).
+- **Fix (§4c updated):** query returns **TOTAL** `sum(rate(http_requests_total{namespace="iocheck",route="/lookup"}[1m]))`; `threshold` = per-pod target; explicit `metricType: AverageValue`; `serverAddress: http://prometheus.monitoring.svc:9090`. Incoming RPS is client-driven → total stable as N changes → no feedback.
+- **Bonus fixes:** `kube_pod_info` doesn't exist (no kube-state-metrics in minimal stack); added `route="/lookup"` filter so probe/scrape traffic doesn't inflate the signal.
+- Rule for the call: *"query=aggregate, threshold=per-pod; KEDA divides. Pre-dividing double-normalizes and oscillates."* To be applied when we author the ScaledObject in M6.
 
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.

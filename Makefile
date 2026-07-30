@@ -41,7 +41,7 @@ clean: ## Stop and REMOVE volumes (fresh DB next up)
 
 # ---- Kubernetes (kind) — M3+ -------------------------------------------------
 CLUSTER := iocheck
-VERSION := 0.1.0
+VERSION := 0.1.1
 IMAGE := iocheck:$(VERSION)          # versioned tag, NOT :latest (concern #5)
 NS := iocheck
 
@@ -85,3 +85,36 @@ cluster-status: ## Show nodes + all pods
 
 cluster-down: ## Delete the kind cluster
 	kind delete cluster --name $(CLUSTER)
+
+# ---- Observability (M4) ------------------------------------------------------
+.PHONY: metrics-server prometheus grafana observability grafana-open prometheus-open
+
+metrics-server: ## Install metrics-server (vendored, patched with --kubelet-insecure-tls)
+	kubectl apply -f k8s/metrics-server-v0.7.2.yaml
+	kubectl -n kube-system rollout status deploy/metrics-server --timeout=120s
+
+prometheus: ## Deploy minimal Prometheus (scrapes iocheck)
+	kubectl apply -f k8s/monitoring/00-namespace.yaml
+	kubectl apply -f k8s/monitoring/10-prometheus.yaml
+	kubectl -n monitoring rollout status deploy/prometheus --timeout=120s
+
+grafana: ## Deploy Grafana with provisioned datasource + dashboard-as-code
+	kubectl apply -f k8s/monitoring/00-namespace.yaml
+	kubectl create configmap grafana-dashboard-iocheck -n monitoring \
+	  --from-file=iocheck-overview.json=k8s/monitoring/grafana-dashboards/iocheck-overview.json \
+	  --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f k8s/monitoring/20-grafana.yaml
+	kubectl -n monitoring rollout status deploy/grafana --timeout=120s
+
+keda: ## Install KEDA (vendored) — autoscaler for M6
+	kubectl apply --server-side -f k8s/keda-2.17.1.yaml
+	kubectl -n keda rollout status deploy/keda-operator --timeout=150s
+
+observability: metrics-server prometheus grafana keda ## Install the whole M4 stack
+
+grafana-open: ## Port-forward Grafana to localhost:3001 (admin/admin)
+	@echo "Grafana: http://localhost:3001  (anonymous viewer enabled)"
+	kubectl -n monitoring port-forward svc/grafana 3001:3000
+
+prometheus-open: ## Port-forward Prometheus to localhost:9090
+	kubectl -n monitoring port-forward svc/prometheus 9090:9090
