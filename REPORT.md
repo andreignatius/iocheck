@@ -64,11 +64,19 @@ CPU-starved. **CPU is blind to the I/O bottleneck.**
 ### #2 — Make sure pods share load
 Evidence: [`logs/M6-keda-concurrency.log`](logs/M6-keda-concurrency.log), [`docs/evidence/m6-challenge3-keda-scaling.png`](docs/evidence/).
 
-The trap: kube-proxy does **not** rebalance *existing* keep-alive connections, so when the autoscaler adds
-pods, a client's pinned connections keep hammering the **old** pods and the new ones sit idle. The load
-generator must **churn connections** (we use k6 `noConnectionReuse`) so each request re-picks a pod via the
-Service. Result under a 7-pod scale-out: per-pod lookup RPS was **even across all 7 pods**
-(`10.2, 10.3, 10.9, 10.7, 11.0, 10.1, 10.5`) — the new pods took their share.
+A Kubernetes Service load-balances **per connection, not per request**: kube-proxy pins a TCP connection to
+one backend at connect time (conntrack) and never rebalances it. So with HTTP **keep-alive**, a client's
+requests all ride that one connection and stay on the pod picked *then* — when the autoscaler adds pods, the
+**new ones sit idle** while existing connections keep hammering the old.
+
+*Proof that the Service does spread once connections cycle:* with k6 `noConnectionReuse`, a 7-pod scale-out
+gave **even per-pod RPS** (`10.2, 10.3, 10.9, 10.7, 11.0, 10.1, 10.5`). But churning is a property of our
+*test* client — a real SOC caller holds keep-alive and won't rebalance itself. The lever we control is
+**server-side**: cap requests/age per connection (Node `maxRequestsPerSocket` / `keepAliveTimeout`) so the
+server periodically closes connections and clients reconnect into a fresh backend pick. The complete answer
+is an **L7 proxy / service mesh** that terminates client keep-alive and balances **per request**, making
+connection stickiness irrelevant. (The demo uses test-side churn to *isolate and verify* the Service's
+balancing; the two production levers above are how you'd guarantee it for clients you don't control.)
 
 ### #3 — An autoscaler that scales up *and* down; defend min/max
 Evidence: [`docs/evidence/m6-challenge3-keda-scaling.png`](docs/evidence/) — replicas **2 → 7 → 2**.
@@ -105,8 +113,13 @@ KEDA reads Prometheus. If Prometheus is unreachable, the ScaledObject's **`fallb
 ```yaml
 fallback: { failureThreshold: 3, replicas: 4 }
 ```
-After 3 failed polls, KEDA holds a **safe middle count (4 replicas)** rather than collapsing to `min` (which
-would drop capacity during a storm we can no longer see) or thrashing on stale data. Independently, the app
+After 3 failed polls KEDA **holds 4 replicas**. *Why 4?* Scaling here is **multiplicative** (bursts are ~10×;
+replicas scale by ratio, not a fixed offset), so the right "middle" of `[min=2, max=8]` is the **geometric
+mean** √(2·8) = **4** — equivalently **4 = 2×min = max/2**. Blind to load, that placement is **symmetric in
+scaling error**: the held count is at most ~2× off the true demand in *either* direction, whereas collapsing
+to `min` risks a **4× under-provision** against a storm we can no longer see (p99 breach), and pinning to
+`max` wastes capacity and pushes the DB connection ceiling. It's also backend-safe: 4 × concurrency-target 10
+= 40 in-flight at target, and 4 × pool-10 = 40 DB connections — well under Postgres's 100. Independently, the app
 tolerates a **Redis outage** by design: `/readyz` gates on **Postgres only** (hard dep); Redis is soft, so a
 lookup **fails open** to Postgres (verified: [`logs/M2-resilience.log`](logs/M2-resilience.log) — served from
 PG with Redis down, `readyz` stays 200, `cache_up=0`). And `/healthz` (liveness) is **process-only** so a

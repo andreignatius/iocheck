@@ -1019,3 +1019,39 @@ Affirmed the instinct with a nuance: IOC **values** are already kept out of metr
 ### Claude (summary)
 
 Added the `/ioc` audit trail (image 0.1.5). `auth.ts`: on success stashes a credential fingerprint (`sha256(key)[:12]` — never the key) for the handler; on failure logs `ioc_auth_denied` (warn + src_ip). The `/ioc` handler emits `ioc_upsert` (info) with actor, src_ip, and the mutated `type/value/source/score`. The IOC value is logged on this **write** path deliberately (audit needs the mutated object); the high-volume **read** path still logs no values. Verified live ([`logs/S-ioc-audit.log`](../logs/S-ioc-audit.log)): valid→201 + `ioc_upsert`, bad key→401 + `ioc_auth_denied`, raw key never in logs; build + 15 tests pass. Updated REPORT (AuthN/Z bullet; removed audit-log from "with another week" as done), plan §S7, logs index, journal. Next: final REPORT read.
+
+---
+
+## Turn 54 — 2026-07-31 11:10 +08
+
+### Andre (verbatim)
+
+> let's try to tighten up the report for now!
+>
+> re the REPORT
+> ### #2 — Make sure pods share load
+> Evidence: [`logs/M6-keda-concurrency.log`](logs/M6-keda-concurrency.log), [`docs/evidence/m6-challenge3-keda-scaling.png`](docs/evidence/).
+>
+> The trap: kube-proxy does **not** rebalance *existing* keep-alive connections, so when the autoscaler adds pods, a client's pinned connections keep hammering the **old** pods and the new ones sit idle. The load generator must **churn connections** (we use k6 `noConnectionReuse`) so each request re-picks a pod via the Service. Result under a 7-pod scale-out: per-pod lookup RPS was **even across all 7 pods** (`10.2, 10.3, 10.9, 10.7, 11.0, 10.1, 10.5`) — the new pods took their share.
+>
+> these are my thoughts, feel free to challenge...
+>
+> when our autoscaler adds more pods during a rush, we want the incoming work to spread across all of them... but to my unds, connections are sticky. for e.g. when a client connects to the svc, k8s router picks one pod for that connection and keeps sending everything down it... so it routes connections, not individual requests. the clients keep their connection open (it's faster that way)... so all a client's requests keep hitting the same pod, even after you add new ones, i.e. the new pods sit idle.
+>
+> that fix imo sits on the client side... but a real SOC tool is a client we don't control + it won't voluntarily re-queue. currently we work around this by tweaking our tests...
+>
+> but what we could control is the server side...
+>
+> so like we make our own server kick each connection after N requests which forces clients to reconnect and get re-routed
+>
+> is this concern valid? should we address in the doc?
+>
+> for this part
+> "## What happens when the autoscaler's data source is unavailable
+> [pasted the KEDA-fallback paragraph incl. `fallback: { failureThreshold: 3, replicas: 4 }` and the "safe middle count (4 replicas)" / Redis-outage text]"
+>
+> could we tighten the reasoning for number 4 from math pov?
+
+### Claude (summary)
+
+**Validated the connection-stickiness reasoning** — correct on every point (Service LB is per-connection via conntrack, keep-alive pins requests to the connect-time pod, `noConnectionReuse` is a *test-client* property, server-side `maxRequestsPerSocket`/`keepAliveTimeout` is the real lever we control; added that an **L7 proxy/mesh** balancing per-request is the complete fix). Rewrote **#2** to reframe the k6 churn as *proof the Service can balance once connections cycle* and to add the server-side + L7 production answers. Tightened **#4's `replicas: 4`** with a **math argument**: scaling is multiplicative, so the middle of `[2,8]` is the **geometric mean √(2·8)=4 = 2×min = max/2** → symmetric (~2×) scaling error either way vs a 4× under-provision at min; plus backend-safety (4×10=40 in-flight/DB conns < 100). Offered to also *implement* `maxRequestsPerSocket` as a one-liner (doc currently presents it as the production lever, consistent with how PgBouncer/TLS are discussed).

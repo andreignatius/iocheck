@@ -312,6 +312,11 @@ Andre asked whether exposing `/metrics` on the public API port leaks the lookup 
 ### 2026-07-31 10:58 — §S7: /ioc audit trail (image 0.1.5)
 Added an audit trail to the crown-jewels write path. `auth.ts` stashes a credential fingerprint (`sha256(key)[:12]`, never the key) on success and logs `ioc_auth_denied` (warn + src_ip) on failure; the `/ioc` handler emits `ioc_upsert` (info) with actor, src_ip, and the mutated `type/value/source/score`. The IOC **value is logged on this write path deliberately** (an audit trail is useless without the mutated object) — the high-volume read path still logs no values (§S7/§S8 scoping). **Verified live** ([`logs/S-ioc-audit.log`](../logs/S-ioc-audit.log)): valid upsert→201 + `ioc_upsert`; bad key→401 + `ioc_auth_denied`; grep confirms the raw admin key never appears in logs. Build + 15 tests pass. Docs: REPORT AuthN/Z bullet (+removed audit-log from "with another week", now done), plan §S7, logs/README.
 
+### 2026-07-31 11:10 — REPORT tightening (Andre): challenge #2 framing + #4 fallback math
+- **#2 (load sharing):** Andre flagged that the old text implied we "fixed" load-sharing when `noConnectionReuse` is a *test-client* property. Validated his reasoning (Service LB is per-connection via conntrack; keep-alive pins to connect-time pod; real SOC clients won't rebalance). Rewrote #2: k6 churn now framed as *proof the Service balances once connections cycle*; added the server-side lever (`maxRequestsPerSocket`/`keepAliveTimeout` → force reconnect → re-route) and the fuller **L7 proxy/mesh** (per-request LB) answer. Not implemented — presented as production levers (consistent with PgBouncer/TLS framing); offered to wire `maxRequestsPerSocket` as a one-liner if wanted (won't disturb evidence since k6 already churns).
+- **#4 (`replicas: 4` fallback):** tightened to a math argument — scaling is multiplicative, so the blind-hold count is the **geometric mean √(min·max)=√(2·8)=4 = 2×min = max/2**; symmetric ~2× scaling error either way vs 4× under-provision at min; backend-safe (4×10=40 in-flight/DB conns < 100).
+- Doc-only; no code/manifest change, cluster untouched (still 0.1.5).
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).
