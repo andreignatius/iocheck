@@ -44,6 +44,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      METRICS_PORT: 9464
       LOG_LEVEL: info
       BODY_LIMIT: 8kb
       POSTGRES_HOST: postgres
@@ -67,6 +68,7 @@ services:
         condition: service_healthy
     ports:
       - "3000:3000"
+      - "9464:9464"   # /metrics (separate port, §S8)
     healthcheck:
       # Distroless has no shell/curl — use the bundled node binary directly.
       test: ["CMD", "/nodejs/bin/node", "-e", "require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]

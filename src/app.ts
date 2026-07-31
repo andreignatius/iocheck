@@ -66,6 +66,25 @@ export function createApp() {
     try {
       const input = UpsertSchema.parse(req.body);
       const rec = await upsert(input);
+      // AUDIT (§S7): the /ioc write is the crown jewels — un-flagging a real threat is an
+      // evasion, flagging a legit indicator is a SOC DoS. Record who (key fingerprint, never
+      // the key), from where, and exactly what changed. NB: this DELIBERATELY logs the IOC
+      // value — the "no IOC values in logs" rule targets the high-volume *lookup* path
+      // (analyst investigation patterns); a privileged *mutation* audit trail is useless
+      // without the object it mutated, and accountability for tampering outweighs the
+      // confidentiality of the block-set here. Low volume (admin writes), never the read path.
+      logger.info(
+        {
+          event: 'ioc_upsert',
+          actor: res.locals.actor,
+          src_ip: req.ip,
+          type: rec.type,
+          value: rec.value,
+          source: rec.source,
+          score: rec.score,
+        },
+        'audit: ioc upsert',
+      );
       res.status(201).json({
         type: rec.type,
         value: rec.value,
@@ -97,11 +116,11 @@ export function createApp() {
     res.status(200).json({ status: 'ready', db: true, cache: cacheOk });
   });
 
-  // --- Prometheus scrape ---
-  app.get('/metrics', async (_req: Request, res: Response) => {
-    res.set('Content-Type', registry.contentType);
-    res.send(await registry.metrics());
-  });
+  // NOTE: /metrics is deliberately NOT served on this (public) app. It lives on a
+  // separate internal listener (createMetricsApp, bound to METRICS_PORT) so a
+  // NetworkPolicy can restrict it to the monitoring namespace only — the public API
+  // port never exposes operational metadata (verdict rates / request tempo reveal SOC
+  // activity even without IOC values, §S8).
 
   // --- generic error handler: no stack traces / DB errors leak to clients (§S10) ---
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
@@ -125,5 +144,22 @@ export function createApp() {
     res.status(500).json({ error: 'internal server error' });
   });
 
+  return app;
+}
+
+/**
+ * The metrics-only app, served on a SEPARATE internal port (METRICS_PORT) from the
+ * public API (§S8). Keeping /metrics off the public port lets a NetworkPolicy expose it
+ * to the monitoring namespace ONLY — NetworkPolicy is L3/L4 and can't gate a single HTTP
+ * path, so port separation is the mechanism. The instrumentation MIDDLEWARE stays on the
+ * public app (it records real traffic); this app only *exposes* the shared registry.
+ */
+export function createMetricsApp() {
+  const app = express();
+  app.disable('x-powered-by');
+  app.get('/metrics', async (_req: Request, res: Response) => {
+    res.set('Content-Type', registry.contentType);
+    res.send(await registry.metrics());
+  });
   return app;
 }

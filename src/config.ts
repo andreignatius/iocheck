@@ -8,6 +8,10 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
+  // /metrics is served on a SEPARATE port from the public API (§S8) so a NetworkPolicy
+  // can expose it to the monitoring namespace ONLY — the public :PORT never serves the
+  // operational metadata (verdict rates, request tempo) that reveals SOC activity.
+  METRICS_PORT: z.coerce.number().int().positive().default(9464),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   BODY_LIMIT: z.string().default('8kb'),
 

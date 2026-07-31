@@ -41,7 +41,7 @@ clean: ## Stop and REMOVE volumes (fresh DB next up)
 
 # ---- Kubernetes (kind) — M3+ -------------------------------------------------
 CLUSTER := iocheck
-VERSION := 0.1.3
+VERSION := 0.1.5
 IMAGE := iocheck:$(VERSION)          # versioned tag, NOT :latest (concern #5)
 NS := iocheck
 

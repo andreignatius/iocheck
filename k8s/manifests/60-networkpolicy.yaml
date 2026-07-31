@@ -84,9 +84,12 @@ spec:
       ports:
         - { protocol: TCP, port: 6379 }
 ---
-# 6) iocheck app accepts ingress on 3000 (clients + Prometheus scrape + kubelet probes).
-#    Left open on the port for the demo/port-forward; PROD would restrict `from` to the
-#    ingress controller + the monitoring namespace.
+# 6) iocheck app ingress. Two separate rules for two separate ports (§S8):
+#    - 3000 (public API + kubelet probes): left open on the port for the demo/port-forward;
+#      PROD would restrict `from` to the ingress controller.
+#    - 9464 (/metrics): monitoring namespace ONLY. NetworkPolicy is L3/L4 and can't gate an
+#      HTTP path, so metrics live on their own port and this rule keeps SOC-activity metadata
+#      (verdict rates, request tempo) off the public port and away from every non-Prometheus peer.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -100,3 +103,9 @@ spec:
   ingress:
     - ports:
         - { protocol: TCP, port: 3000 }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring   # auto-set on every ns since k8s 1.22
+      ports:
+        - { protocol: TCP, port: 9464 }

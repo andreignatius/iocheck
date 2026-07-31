@@ -8,6 +8,11 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom
  * That would both explode cardinality (Prometheus OOM) and leak sensitive IOCs
  * via /metrics. We label only by low-cardinality dimensions: route, method,
  * status class, ioc type, verdict, cache result.
+ *
+ * EXPOSURE RULE (§S8): even value-free, these aggregates (verdict rates, request
+ * tempo) reveal SOC activity — so /metrics is exposed on a SEPARATE internal port
+ * (createMetricsApp, METRICS_PORT), never the public API port, and a NetworkPolicy
+ * restricts that port to the monitoring namespace.
  */
 export const registry = new Registry();
 collectDefaultMetrics({ register: registry });

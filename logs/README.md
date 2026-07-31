@@ -15,6 +15,8 @@ its capture timestamp and a **reproduce** command. Regenerate any of them from a
 | [M6-keda-scaling.log](./M6-keda-scaling.log) | M6 | the **RPS signal fails** run — completed-RPS is pool-capped at ~12/pod = threshold → KEDA holds at 2 (motivates the switch to concurrency) |
 | [M6-keda-concurrency.log](./M6-keda-concurrency.log) | M6 | **challenges #2/#3/#4**: KEDA on in-flight concurrency → **2→7→2**, load spread evenly across all pods, p99 ~5s→~2s |
 | [M9-clean-spinup.log](./M9-clean-spinup.log) | M9 | **`make cluster-down && make all` from scratch → exit 0**: platform-then-app order, **ScaledObject applies cleanly**, 3 nodes Ready, all pods Running, smoke test passes (the "spin up from clean state" deliverable) |
+| [S-metrics-port-split.log](./S-metrics-port-split.log) | §S8 | **/metrics moved off the public port** to an internal, monitoring-only port (9464): `:3000/metrics`→404, `:9464` **blocked from a non-monitoring pod**, Prometheus scrape `up`, KEDA still `Happy` — keeps SOC-activity metadata off the client-facing port |
+| [S-ioc-audit.log](./S-ioc-audit.log) | §S7 | **/ioc audit trail**: successful write → `ioc_upsert` (who=key fingerprint, from where, what changed); bad key → `ioc_auth_denied`; raw admin key never appears in logs |
 
 Scripts: [`scripts/smoke.sh`](../scripts/smoke.sh), [`scripts/resilience.sh`](../scripts/resilience.sh), [`scripts/k8s-verify.sh`](../scripts/k8s-verify.sh).
 (k6 load-test evidence — the challenge-#1 "CPU flat while RPS/p99 spike" run — lands here at M5/M6.)

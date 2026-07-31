@@ -18,7 +18,7 @@ client ─POST /lookup─▶ Service (ClusterIP) ─▶ iocheck pods (Express/TS
                                         cache hit │           │ cache miss
                                                   ▼           ▼
                                              Redis (soft)   Postgres (hard, source of truth)
-        Prometheus ◀─scrape /metrics── pods        KEDA ◀─reads Prometheus──▶ scales the Deployment
+  Prometheus ◀─scrape :9464/metrics (monitoring-only)─ pods   KEDA ◀─reads Prometheus──▶ scales the Deployment
 ```
 
 - **App:** Express + TypeScript. `zod` per-type validation **+ canonicalization** (lowercased domains,
@@ -127,14 +127,25 @@ dependency blip never triggers a restart storm.
 
 Threat model: protect **integrity** of the intel (tampering via `/ioc`), **confidentiality** of IOCs and
 investigation patterns, and **availability** under storm + abuse.
-- **AuthN/Z:** `/ioc` (privileged write — un-flagging a real threat is an evasion, flagging a legit one is a
-  SOC DoS) requires an API key (constant-time compare). `/lookup` is the read tier.
+- **AuthN/Z + audit:** `/ioc` (privileged write — un-flagging a real threat is an evasion, flagging a legit
+  one is a SOC DoS) requires an API key (constant-time compare). `/lookup` is the read tier. Every `/ioc`
+  write **and every denied attempt** is **audit-logged** — *who* (a key fingerprint, never the key), *from
+  where*, and *what changed* (proven: [`logs/S-ioc-audit.log`](logs/S-ioc-audit.log)). The audit path
+  deliberately records the IOC value: the "no IOC values in logs" rule targets the high-volume *lookup*
+  path; a privileged-*mutation* trail is useless without the object it mutated.
 - **Least privilege:** app connects as a role with `SELECT/INSERT/UPDATE` on `ioc` only; **secrets via k8s
   Secret**, never committed (`.env` gitignored, verified clean of history).
 - **Network segmentation:** Calico **default-deny** + allow-list; **Postgres/Redis accept traffic only from
   iocheck pods** (proven: a non-iocheck pod is BLOCKED — [`logs/M3-k8s.log`](logs/M3-k8s.log)).
 - **Hardening:** namespace **Pod Security Admission = restricted**; non-root, read-only rootfs, dropped
   caps, seccomp; **no IOC values in metrics or logs**; input **canonicalised** (anti-evasion) + size-capped.
+- **Metrics isolation:** `/metrics` is served on a **separate internal port (9464)**, not the public API
+  port, and a **NetworkPolicy** exposes it to the **monitoring namespace only**. Even with no IOC values in
+  labels, the *aggregate* metadata (verdict rates, request tempo) reveals **SOC activity/tempo**, so it must
+  never sit on the client-facing port. Proven ([`logs/S-metrics-port-split.log`](logs/S-metrics-port-split.log)):
+  `:3000/metrics`→**404**, `:9464/metrics` **blocked** from a non-monitoring pod (times out) while Prometheus
+  scrapes it `up`. (NetworkPolicy is L3/L4 and can't gate an HTTP path — port separation is what makes the
+  policy expressible.)
 
 ---
 
@@ -147,7 +158,9 @@ investigation patterns, and **availability** under storm + abuse.
 4. **Tighten the demo p99** (threshold 8 → 8 pods so pool > offered concurrency → sub-1s) and add
    **predictive/scheduled pre-scaling** for known feed-update windows (reactive scaling can't beat spike onset).
 5. **Prod hardening:** floor replicas at 3, TLS in transit + DB encryption-at-rest, External Secrets/Vault,
-   an audit log on `/ioc`, and per-identity rate limiting tuned above legit storm levels.
+   per-identity auth + rate limiting tuned above legit storm levels, and shipping the `/ioc` audit stream
+   (already emitted) to an access-controlled, tamper-evident sink with old→new score diffing to alert on
+   un-flagging.
 
 ---
 

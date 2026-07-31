@@ -53,7 +53,7 @@ data:
             regex: iocheck
           - source_labels: [__meta_kubernetes_pod_container_port_number]
             action: keep
-            regex: "3000"
+            regex: "9464"                # scrape the dedicated metrics port, NOT the public API port (§S8)
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
           - source_labels: [__meta_kubernetes_namespace]

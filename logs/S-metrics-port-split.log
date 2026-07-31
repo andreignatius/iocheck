@@ -1,0 +1,26 @@
+# S — /metrics port split (§S8): metrics moved off the public API port to an internal
+# monitoring-only port (9464), enforced by NetworkPolicy.
+# Captured: 2026-07-31 10:47 +08
+# Reproduce: make deploy && make prometheus (or: kubectl apply -f k8s/monitoring/10-prometheus.yaml
+#   && kubectl -n monitoring rollout restart deploy/prometheus), then the checks below.
+
+== image ==
+iocheck:0.1.4
+
+== (A) /metrics is OFF the public port, ON the internal port ==
+GET :3000/metrics  -> 404   (public API port no longer serves metrics)
+GET :3000/healthz  -> 200   (public app still serves)
+GET :9464/metrics  -> 200   (dedicated internal metrics port; value-free samples e.g. iocheck_cache_up 1)
+
+== (B) Prometheus scrapes the metrics port; KEDA still reads the signal ==
+prometheus targets (job=iocheck):
+  http://192.168.23.74:9464/metrics  -> up
+  http://192.168.237.200:9464/metrics -> up
+KEDA ScaledObject health: {"s0-prometheus":{"numberOfFailures":0,"status":"Happy"}}
+KEDA query avg_over_time(sum(http_in_flight_requests{namespace="iocheck"})[30s:5s]) -> 0 (idle, readable)
+
+== (C) NetworkPolicy: metrics port is monitoring-namespace-only ==
+from a pod in 'default' ns (NOT monitoring), target iocheck pod 192.168.23.74:
+  :3000/healthz -> 200          (public port open to all — clients/probes)
+  :9464/metrics -> 000 exit=28  (TIMEOUT — BLOCKED; only the monitoring ns is allowed)
+Prometheus (monitoring ns) scraping :9464 = up (above) proves the allow-path works.

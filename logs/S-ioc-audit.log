@@ -1,0 +1,18 @@
+# S — /ioc audit trail (§S7): every privileged write (and every DENIED attempt) is
+# logged with WHO (key fingerprint, never the key), FROM WHERE, and WHAT changed.
+# Captured: 2026-07-31 10:58 +08   image: iocheck:0.1.5
+# Reproduce: POST /ioc with a valid key, then with a bad key; read pod logs.
+
+== (1) valid upsert -> 201, emits an 'ioc_upsert' audit line (level 30/info) ==
+{"level":30,...,"event":"ioc_upsert","actor":"4a17f1009628","src_ip":"::ffff:127.0.0.1","type":"ip","value":"198.51.100.44","source":"audit-test","score":90,"msg":"audit: ioc upsert"}
+
+== (2) bad key -> 401, emits an 'ioc_auth_denied' audit line (level 40/warn) ==
+{"level":40,...,"event":"ioc_auth_denied","src_ip":"::ffff:127.0.0.1","msg":"unauthorized /ioc write attempt"}
+
+== safety ==
+- 'actor' is sha256(key)[:12] — attributes the write to a credential WITHOUT logging the key.
+- Grep confirmed: the raw IOC_ADMIN_API_KEY value never appears in the pod logs.
+- The IOC value IS logged here on purpose (audit needs the mutated object). This is the
+  WRITE path only — the high-volume /lookup read path still logs NO IOC values (§S7/§S8).
+- src_ip is ::ffff:127.0.0.1 here because the test went via port-forward; in-cluster it is
+  the real client pod IP.

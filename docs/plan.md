@@ -367,9 +367,11 @@ The upsert path is the crown jewels. An attacker who writes to `/ioc` can **un-f
 
 ### S7. Audit logging
 - **[build]** structured audit log on `/ioc` (who upserted which IOC, when). **[writeup]** analyst-query audit (queries are sensitive — they reveal active investigations) + retention + tamper-evidence. No secrets/tokens in logs.
+- **[DONE]** `event: ioc_upsert` (info) on every successful write — `actor` = `sha256(key)[:12]` (attributes to a credential, never logs the key), `src_ip`, and the mutated `type/value/source/score`; plus `event: ioc_auth_denied` (warn) on every failed attempt (credential-probing signal). The value IS logged on this write path (audit needs the object); the high-volume read path still logs no values. Verified: [`logs/S-ioc-audit.log`](../logs/S-ioc-audit.log). Future (writeup): ship to a tamper-evident sink + old→new score diff to alert on un-flagging.
 
 ### S8. Metrics cardinality & leakage (security + ops)
 - **[build]** label metrics by **`type` + `verdict` only — NEVER the IOC `value`/IP/hash**: high-cardinality label = Prometheus OOM (cardinality bomb) *and* leaks sensitive IOCs via `/metrics`.
+- **[build, added]** serve `/metrics` on a **separate internal port (9464)**, not the public API port, and a **NetworkPolicy** allows it **from the monitoring namespace only**. Rationale: even value-free, the *aggregate* metadata (verdict rates, request tempo) reveals **SOC activity**; NetworkPolicy is L3/L4 so it can't gate an HTTP path — port separation is what makes "metrics only to Prometheus" expressible. The instrumentation middleware stays on the public app (records real traffic); only the *exposition* endpoint moves. Verified in [`logs/S-metrics-port-split.log`](../logs/S-metrics-port-split.log): `:3000/metrics`→404, `:9464` blocked from a non-monitoring pod, Prometheus scrape `up`, KEDA still `Happy`.
 
 ### S9. Rate limiting / abuse (mind the storm interaction)
 - **[build/writeup]** `express-rate-limit` **per identity**, set **above** legit 10× storm levels so a real alert storm is never throttled while a runaway/compromised credential is caught. Explicitly note the interaction with autoscaling (two controls, same traffic).

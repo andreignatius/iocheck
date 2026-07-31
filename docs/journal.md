@@ -300,9 +300,21 @@ Andre spotted a spurious prereq + a brief-contradiction; swept README+REPORT aga
 - **Gaps the writeup missed (in code but not REPORT) — added:** all **3 probes** (startup/liveness/readiness), **requests + limits on every container**, cache **TTL + invalidate-on-`/ioc`-upsert**.
 - **Full cross-check vs brief:** every requirement (API endpoints, storage+cache, workload, platform [kind/Dockerfile/manifests/probes/PDB/limits/autoscaling], 4 challenges, data-source-down, one-week, AI disclosure) now present in REPORT/README. No contradictions between our README section and REPORT.
 
+### 2026-07-31 10:47 — §S8 hardening: /metrics port split (Andre catch)
+Andre asked whether exposing `/metrics` on the public API port leaks the lookup patterns of an intel service. Nuance: we already keep **IOC values out of labels** (§S8), so specific lookups aren't leaked — but the **aggregate metadata** (verdict-by-type rates, request tempo) still reveals **SOC activity/tempo**, and it was served unauthenticated on the public port. Fix (standard app-port vs metrics-port separation):
+- **Code:** `createMetricsApp()` serves `/metrics` on a new `METRICS_PORT` (9464); the instrumentation *middleware* stays on the public app (records real traffic), only the *exposition* endpoint moves. `index.ts` runs both listeners + drains both on SIGTERM. `config.ts` adds `METRICS_PORT`. Image → **0.1.4**.
+- **Manifests:** deployment adds `containerPort: 9464 (metrics)`; ConfigMap `METRICS_PORT`; Prometheus scrape `keep regex "3000"→"9464"`; NetworkPolicy `iocheck-ingress` split into two rules — `:3000` open (clients/probes), `:9464` **from `namespaceSelector kubernetes.io/metadata.name: monitoring` only**.
+- **Local dev:** docker-compose exposes 9464 + `METRICS_PORT`; smoke/resilience scripts curl `$METRICS_BASE` (9464); smoke also asserts `:3000/metrics`→404.
+- **Verified live** ([`logs/S-metrics-port-split.log`](../logs/S-metrics-port-split.log)): `:3000/metrics`→404, `:3000/healthz`→200, `:9464/metrics`→200; Prometheus scrapes both pods `:9464` **up**; KEDA `status: Happy, 0 failures`, query readable; **NetworkPolicy** — from a `default`-ns pod, `:3000`→200 but `:9464`→timeout (blocked). Build + 15 unit tests pass (Node 20).
+- **Docs:** REPORT architecture diagram + new "Metrics isolation" security bullet; plan §S8; metrics.ts EXPOSURE RULE; logs/README table.
+- **Decision on further gaps:** do the **/ioc audit log** next if time permits (small, high-signal integrity trail — no infra); leave rate-limiting/TLS/per-identity as documented "with another week."
+
+### 2026-07-31 10:58 — §S7: /ioc audit trail (image 0.1.5)
+Added an audit trail to the crown-jewels write path. `auth.ts` stashes a credential fingerprint (`sha256(key)[:12]`, never the key) on success and logs `ioc_auth_denied` (warn + src_ip) on failure; the `/ioc` handler emits `ioc_upsert` (info) with actor, src_ip, and the mutated `type/value/source/score`. The IOC **value is logged on this write path deliberately** (an audit trail is useless without the mutated object) — the high-volume read path still logs no values (§S7/§S8 scoping). **Verified live** ([`logs/S-ioc-audit.log`](../logs/S-ioc-audit.log)): valid upsert→201 + `ioc_upsert`; bad key→401 + `ioc_auth_denied`; grep confirms the raw admin key never appears in logs. Build + 15 tests pass. Docs: REPORT AuthN/Z bullet (+removed audit-log from "with another week", now done), plan §S7, logs/README.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
-- [ ] Wire audit log on `/ioc` (§S7) — currently only pino request logging.
+- [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).
 - [ ] Rate limiting (§S9) — deferred, decide build vs writeup.
 - [x] ~~M3 pt2: app image versioned tag + imagePullPolicy~~ (done in M3 pt2 / M4).
 - [ ] Writeup: pin Calico container images by digest + mirror for air-gap (concern #6).

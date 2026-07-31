@@ -3,6 +3,7 @@
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:3000}"
+METRICS_BASE="${METRICS_BASE:-http://localhost:9464}"   # /metrics is on its own port (§S8)
 # Load the admin key from .env (gitignored) if present, else require it in the environment —
 # so no credential is committed to the repo (§S2).
 [ -f .env ] && { set -a; . ./.env; set +a; }
@@ -43,7 +44,9 @@ say "invalid sha256 -> 400"
 curl -s -o /dev/null -w 'HTTP %{http_code}\n' -XPOST "$BASE/lookup" -H "$ct" \
   -d '{"type":"sha256","value":"deadbeef"}'
 
-say "metrics (first lines; note NO ioc value labels)"
-curl -fsS "$BASE/metrics" | grep -E '^iocheck_|^http_requests_total' | head -8
+say "metrics (separate port $METRICS_BASE; note NO ioc value labels)"
+curl -fsS "$METRICS_BASE/metrics" | grep -E '^iocheck_|^http_requests_total' | head -8
+say "public port must NOT serve /metrics (should be 404)"
+curl -s -o /dev/null -w '  GET :3000/metrics -> %{http_code} (expect 404)\n' "$BASE/metrics"
 
 echo; echo "smoke complete."

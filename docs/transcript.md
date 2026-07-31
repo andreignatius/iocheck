@@ -989,3 +989,33 @@ Swept README+REPORT vs the brief. **Fixes:** (1) **`helm` removed** from prereqs
 ### Claude (summary)
 
 Correct — Turn 50 bracket-summarized the quoted Prerequisites block and the readyz REPORT excerpt. Restored Turn 50's Andre input to the **full verbatim** (the pasted `## Prerequisites` line + the readyz paragraph + the brief's `/readyz` line + all questions). Continuing to keep inputs strictly verbatim.
+
+---
+
+## Turn 52 — 2026-07-31 10:47 +08
+
+### Andre (verbatim)
+
+> hey i just thought of something... metrics/ is the service that shares data for monitoring system to prometheus right? for intel service, shouldn't the pattern of what is being looked up be confidential?
+>
+> [quoted `src/app.ts` /metrics handler and `src/index.ts` `app.listen(config.PORT, ...)` — "same app, same port"]
+>
+> same app, same port... shouldn't metrics/ be in diff port?
+>
+> any other security gaps that you think could be present?
+
+### Claude (summary)
+
+Affirmed the instinct with a nuance: IOC **values** are already kept out of metric labels (§S8) so specific lookups aren't leaked, but the **aggregate** metadata (verdict rates, request tempo) still reveals **SOC activity**, and it sat unauthenticated on the public port — a real gap. Implemented the **app-port vs metrics-port split**: `/metrics` moved to internal `METRICS_PORT` (9464) via `createMetricsApp()`; `NetworkPolicy` restricts 9464 to the **monitoring namespace only**; Prometheus scrape retargeted 3000→9464; image→0.1.4. Verified live ([`logs/S-metrics-port-split.log`](../logs/S-metrics-port-split.log)): `:3000/metrics`→404, `:9464` scraped `up` by Prometheus but **blocked** from a non-monitoring pod, KEDA still `Happy`; build + 15 tests pass. Reviewed other gaps (rate-limiting, `/ioc` audit log, `/lookup` auth, TLS, ingress restriction) — mostly already documented under §S / "with another week"; recommended doing **only the `/ioc` audit log** next (small, high-signal integrity trail) and leaving the rest documented, to avoid a sloppy demo near submission.
+
+---
+
+## Turn 53 — 2026-07-31 10:58 +08
+
+### Andre (verbatim)
+
+> sure lets add the /ioc audit log and then let's wrap it up with the REPORT update after?
+
+### Claude (summary)
+
+Added the `/ioc` audit trail (image 0.1.5). `auth.ts`: on success stashes a credential fingerprint (`sha256(key)[:12]` — never the key) for the handler; on failure logs `ioc_auth_denied` (warn + src_ip). The `/ioc` handler emits `ioc_upsert` (info) with actor, src_ip, and the mutated `type/value/source/score`. The IOC value is logged on this **write** path deliberately (audit needs the mutated object); the high-volume **read** path still logs no values. Verified live ([`logs/S-ioc-audit.log`](../logs/S-ioc-audit.log)): valid→201 + `ioc_upsert`, bad key→401 + `ioc_auth_denied`, raw key never in logs; build + 15 tests pass. Updated REPORT (AuthN/Z bullet; removed audit-log from "with another week" as done), plan §S7, logs index, journal. Next: final REPORT read.

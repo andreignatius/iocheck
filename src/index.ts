@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { createApp } from './app';
+import { createApp, createMetricsApp } from './app';
 import { closeCache, connectCache } from './cache';
 import { closeDb } from './db';
 import { config } from './config';
@@ -15,7 +15,13 @@ async function main(): Promise<void> {
     logger.info({ port: config.PORT, env: config.NODE_ENV }, 'iocheck listening');
   });
 
-  installGracefulShutdown(server);
+  // /metrics on a separate internal port (§S8) — NetworkPolicy restricts it to the
+  // monitoring namespace, so the public port never serves operational metadata.
+  const metricsServer: Server = createMetricsApp().listen(config.METRICS_PORT, () => {
+    logger.info({ port: config.METRICS_PORT }, 'metrics listening (internal)');
+  });
+
+  installGracefulShutdown(server, metricsServer);
 }
 
 /**
@@ -24,7 +30,7 @@ async function main(): Promise<void> {
  * (flip readiness -> 503), stop new connections + drain in-flight, then close the
  * DB pool and Redis, all inside terminationGracePeriodSeconds.
  */
-function installGracefulShutdown(server: Server): void {
+function installGracefulShutdown(server: Server, metricsServer: Server): void {
   let shuttingDown = false;
 
   const shutdown = (signal: string) => {
@@ -33,6 +39,11 @@ function installGracefulShutdown(server: Server): void {
     logger.info({ signal }, 'shutdown initiated — draining');
 
     beginDraining(); // /readyz now returns 503
+
+    // The metrics listener has no user traffic to drain — close it immediately so it
+    // stops accepting scrapes; the public server drains in-flight requests below.
+    metricsServer.close();
+    metricsServer.closeAllConnections();
 
     // Hard cap: if drain hangs, force-close any stragglers and exit before k8s
     // SIGKILLs us at the grace deadline.

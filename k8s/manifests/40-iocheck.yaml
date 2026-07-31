@@ -56,7 +56,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: iocheck
-          image: iocheck:0.1.3
+          image: iocheck:0.1.5
           imagePullPolicy: IfNotPresent     # kind-loaded image; never pull from a registry (#5)
           securityContext:
             allowPrivilegeEscalation: false
@@ -79,6 +79,8 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+            - name: metrics             # /metrics only; NetworkPolicy restricts to monitoring ns (§S8)
+              containerPort: 9464
           lifecycle:
             preStop:
               # Distroless has no shell/sleep -> use the bundled node to sleep ~5s.

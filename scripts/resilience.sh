@@ -4,6 +4,7 @@
 set -uo pipefail
 
 BASE="${BASE:-http://localhost:3000}"
+METRICS_BASE="${METRICS_BASE:-http://localhost:9464}"   # /metrics is on its own port (§S8)
 ct='content-type: application/json'
 say() { printf '\n== %s ==\n' "$1"; }
 
@@ -19,12 +20,12 @@ echo -n "lookup seeded IP with Redis DOWN: "
 curl -fsS -XPOST "$BASE/lookup" -H "$ct" -d '{"type":"ip","value":"203.0.113.7"}'; echo
 echo -n "readyz with Redis DOWN (db hard=ok, cache soft=false, still 200): "
 curl -s -o /dev/null -w 'HTTP %{http_code} ' "$BASE/readyz"; curl -fsS "$BASE/readyz"; echo
-echo -n "cache_up gauge: "; curl -fsS "$BASE/metrics" | grep '^iocheck_cache_up'
+echo -n "cache_up gauge: "; curl -fsS "$METRICS_BASE/metrics" | grep '^iocheck_cache_up'
 
 say "RECOVER: restart Redis, background reconnect flips cache_up back to 1"
 docker compose start redis >/dev/null 2>&1
 sleep 4
-echo -n "cache_up gauge after recovery: "; curl -fsS "$BASE/metrics" | grep '^iocheck_cache_up'
+echo -n "cache_up gauge after recovery: "; curl -fsS "$METRICS_BASE/metrics" | grep '^iocheck_cache_up'
 echo -n "readyz after recovery: "; curl -fsS "$BASE/readyz"; echo
 
 echo; echo "resilience checks complete."
