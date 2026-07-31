@@ -56,7 +56,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: iocheck
-          image: iocheck:0.1.5
+          image: iocheck:0.1.6     # Node 22 runtime (Node 20 EOL) + datastore mem request==limit
           imagePullPolicy: IfNotPresent     # kind-loaded image; never pull from a registry (#5)
           securityContext:
             allowPrivilegeEscalation: false

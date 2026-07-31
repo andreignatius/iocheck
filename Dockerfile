@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- builder: full toolchain, compiles TS -> JS, then drops dev deps ----------
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -11,7 +11,8 @@ RUN npm run build && npm prune --omit=dev
 
 # ---- runtime: distroless (no shell, no package manager, minimal CVEs — §S4) ---
 # The :nonroot tag runs as uid 65532; entrypoint is the node binary.
-FROM gcr.io/distroless/nodejs20-debian12:nonroot AS runtime
+# nodejs22 (Node 20 reached end-of-life ~Apr 2026 — off the security-patch stream).
+FROM gcr.io/distroless/nodejs22-debian12:nonroot AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/node_modules ./node_modules

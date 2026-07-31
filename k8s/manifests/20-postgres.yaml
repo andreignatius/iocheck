@@ -39,7 +39,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:17-alpine
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -79,8 +79,13 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits: { cpu: "500m", memory: "256Mi" }
+            # Memory request == limit (512Mi): RAM is INCOMPRESSIBLE — unlike CPU it can't be
+            # throttled, so a pod over its request is a candidate for OOM-kill/eviction under node
+            # pressure. Equal request/limit reserves the full ceiling up front, so the DB isn't
+            # squeezed. 512Mi covers up to ~80 pooled backends at max scale (8 pods × pool-10).
+            # CPU stays burstable (request < limit) since it *is* compressible.
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
       volumes:
         - name: init
           configMap:

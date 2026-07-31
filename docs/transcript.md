@@ -1139,3 +1139,27 @@ Agreed and went further: node `MemoryPressure=False` is the *wrong* signal to ru
 ### Claude (summary)
 
 Confirmed the allocation (6 CPU / 12 GB — exactly recommended) and clean state, then found + removed a **stale 22h docker-compose stack** that had been draining the Docker VM. Ran the full sequence autonomously: `make all` → **5 min hands-off settle** → settle-gate → verify. **RUN 2 = ALL GREEN:** build exit 0 in **5m41s**, **zero pod restarts** (settled instantly, was 8×/8×/5×/5× before), and V1 smoke + V2 metrics-split + V3 audit + V4 NetworkPolicy all pass ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 2). Confirmed RUN 1's failure was purely host capacity, not code. Cluster left up + healthy for Andre's own manual check.
+
+---
+
+## Turn 59 — 2026-07-31 16:38 +08
+
+### Andre (verbatim)
+
+> hey btw a few things i've noticed while waiting for experiment to run... db/init.sh lowkey feels hackish, could we maybe add a migration lib for db schema? i recall doing something similar for Django Rest Framework, what do you recommend?
+>
+> also, could we maybe consider reviewing resources k8s/manifests/20-postgres.yaml [requests cpu 100m/mem 128Mi, limits cpu 500m/mem 256Mi] am thinking that for memory we should often set requests and limits to the same value cos memory is incompressible and cant be throttled like cpu
+>
+> src/app.ts am thinking we could consider adding a thin abstraction of controller to build for maintainability
+>
+> Dockerfile i think node20 is at EOL? could we consider a newer version?
+>
+> for postgres maybe lets use v18 and also use a newer version of redis?
+>
+> what do you think?
+>
+> [then, after the triage + a mis-set multiselect widget:] wait hold on i thought i could only choose one... yeah let's do all infra changes now — Node 20→22, Postgres mem request==limit (both 512Mi; CPU stays burstable) and same for Redis, Postgres 16→17, Redis 7→8
+
+### Claude (summary)
+
+Triaged all five honestly: **agreed + did now** — Node 20→22 (real: EOL ~Apr 2026), PG/Redis mem `request==limit` (incompressible RAM), PG 16→17 + Redis 7→8. **Pushed back / deferred** — `init.sh`→migration lib (recommended `node-pg-migrate` as a k8s Job, but argued it's over-engineering for one static table at submission; `init.sh` isn't hacky, it's the standard PG-container init — its real limit is first-boot-only/no-versioning) and the controller layer (already have routes→service→repository; marginal for 3 routes). Added the safety detail Andre's point needed: Redis `request==limit` also needs `--maxmemory`+`allkeys-lru` or it just OOMs instead of evicting. Applied all infra edits (→image 0.1.6, lockfile regenerated). Verified locally: builds on Node 22, `/nodejs/bin/node`→v22.22.0, and **`npm audit --omit=dev`→0 vulns** (shipped distroless image is clean; the 5 findings are pruned devDeps). Clean **RUN 3 = ALL GREEN** with the bumps confirmed live: app Node **v22.22.0**, **PostgreSQL 17.10**, **Redis 8.10.0** (`maxmemory 100mb`+`allkeys-lru`), PG/Redis mem `req==lim` (512Mi/128Mi), 0 restarts, V1–V4 all pass. REPORT updated (supply-chain bullet + resource-policy note + migrations/controllers into "with another week").

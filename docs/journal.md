@@ -339,6 +339,15 @@ Re-ran from scratch after Andre bumped Docker (6 CPU / 12 GB) and I removed a st
 - Evidence: [`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 2 section. Cluster left **up and healthy** for Andre's own manual check.
 - **Confirmed root cause of RUN 1 failure was purely host capacity** (7.65 GB Docker RAM + stale compose stack + all-8-CPUs starving host tooling), not code — RUN 2 on identical 0.1.5 code + more resources is spotless.
 
+### 2026-07-31 16:38 — infra hardening batch (Andre): Node 22, PG 17, Redis 8, datastore mem req==limit (→ image 0.1.6)
+Andre reviewed several things while waiting. Triaged; did the low-risk/high-value **infra** batch now, deferred the code refactors.
+- **Node 20 → 22 (EOL fix):** Dockerfile builder `node:22-alpine` + runtime `gcr.io/distroless/nodejs22-debian12:nonroot` (Node 20 hit EOL ~Apr 2026 → off the security-patch stream). `@types/node`→^22, `engines`→>=20, lockfile regenerated (npm install), image→**0.1.6**. Verified: image builds; `/nodejs/bin/node` → **v22.22.0** (preStop hook still valid).
+- **Supply-chain win found:** `npm audit --omit=dev` → **0 vulnerabilities**. All 5 tree findings are devDeps (vitest/tsx/tsc), which the Dockerfile prunes (`npm prune --omit=dev`) → the shipped distroless image carries **0 known vulns**.
+- **Postgres mem `request==limit`=512Mi (Andre's point — RAM is incompressible):** equal req/limit reserves the ceiling up front so the DB can't be squeezed/OOM-evicted under node pressure; CPU stays burstable (compressible). Image `postgres:16→17-alpine`.
+- **Redis mem `request==limit`=128Mi + `--maxmemory 100mb --maxmemory-policy allkeys-lru`:** the eviction bound is what makes req==limit *safe* for a cache — under a large cache-miss storm it evicts the coldest keys instead of growing until the cgroup OOM-kills it. Image `redis:7→8-alpine` (note: Redis 8 is AGPL). Same bumps mirrored in docker-compose for parity.
+- **Deferred (documented as future-work, not done):** `node-pg-migrate` as a k8s Job replacing `init.sh` (over-engineering for one static table at submission; `init.sh` is the standard PG-container init, its real limit is "first-boot only / no versioning"); a controller layer (already have routes→service→repository; marginal for 3 routes).
+- Build + 15 unit tests pass. **Cluster re-verify: RUN 3 = ALL GREEN** — clean `make all`, 0 restarts, settled instantly. Live version proof: app Node **v22.22.0**, **PostgreSQL 17.10**, **Redis 8.10.0**, redis `maxmemory=100mb`+`allkeys-lru`, PG mem `req=lim=512Mi`, Redis mem `req=lim=128Mi`; V1 smoke + V2 split + V3 audit + V4 netpol all pass ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 3).
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).

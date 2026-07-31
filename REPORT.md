@@ -32,7 +32,9 @@ client ─POST /lookup─▶ Service (ClusterIP) ─▶ iocheck pods (Express/TS
 - **Platform:** multi-node **kind** cluster with **Calico** (so NetworkPolicy actually enforces — kindnet
   doesn't). metrics-server + a minimal **Prometheus/Grafana** (provisioned as code) + **KEDA**. The
   Deployment wires all **three probes** (startup for slow first-load, liveness on `/healthz`, readiness on
-  `/readyz`), a **PDB `minAvailable: 2`**, and **CPU/memory requests + limits on every container**.
+  `/readyz`), a **PDB `minAvailable: 2`**, and **CPU/memory requests + limits on every container** —
+  datastores pin memory **`request == limit`** (RAM is incompressible, so a squeezed pod is an OOM-kill
+  candidate), with Redis additionally bounded by **`maxmemory`+LRU** so it evicts rather than OOMs.
 
 Design choices I can defend: point-lookup schema (no trained retriever/vector store needed); cache
 absorbs the read-heavy common case; the datastores are the only stateful pieces; everything else is
@@ -152,6 +154,10 @@ investigation patterns, and **availability** under storm + abuse.
   iocheck pods** (proven: a non-iocheck pod is BLOCKED — [`logs/M3-k8s.log`](logs/M3-k8s.log)).
 - **Hardening:** namespace **Pod Security Admission = restricted**; non-root, read-only rootfs, dropped
   caps, seccomp; **no IOC values in metrics or logs**; input **canonicalised** (anti-evasion) + size-capped.
+- **Supply chain:** distroless runtime on a **current, non-EOL** Node (22; 20 is past end-of-life), every
+  image **pinned** (kind node by digest); dev/test deps are pruned from the runtime image, so the shipped
+  container reports **0 known vulnerabilities** (`npm audit --omit=dev`). Datastores on current majors
+  (Postgres 17, Redis 8).
 - **Metrics isolation:** `/metrics` is served on a **separate internal port (9464)**, not the public API
   port, and a **NetworkPolicy** exposes it to the **monitoring namespace only**. Even with no IOC values in
   labels, the *aggregate* metadata (verdict rates, request tempo) reveals **SOC activity/tempo**, so it must
@@ -174,6 +180,10 @@ investigation patterns, and **availability** under storm + abuse.
    per-identity auth + rate limiting tuned above legit storm levels, and shipping the `/ioc` audit stream
    (already emitted) to an access-controlled, tamper-evident sink with old→new score diffing to alert on
    un-flagging.
+6. **Maintainability:** replace the first-boot `init.sh` with a **versioned migration tool** (`node-pg-migrate`)
+   run as a **k8s Job/init-container** — `init.sh` is the standard Postgres-container init but only runs once
+   and doesn't track schema versions. As the route surface grows, extract a **controller layer** (the
+   business logic already lives in `service.ts`/`repository.ts`, so this is a thin HTTP-wiring split).
 
 ---
 
