@@ -23,12 +23,12 @@ Two storm humps. Reading across the same time window:
   config redeploy just before the run, *not* the autoscaler.)
 
 ### `challenge1-cpu-vs-p99.png` — the money-shot (dual-axis overlay)
-The single panel that makes the argument: **CPU % of request hugs ~25–50% (well under the 70% HPA
+The single panel that makes the argument: **CPU % of request hugs ~25–55%, peaking just under 60% (well under the 70% HPA
 trigger line) while p99 blows past the SLO to seconds.** A CPU-based HPA sees "plenty of CPU headroom,
 nothing to do" — and never scales — while the service is drowning. **CPU is blind to the I/O bottleneck.**
 
 ## The one-sentence takeaway
-*Under an I/O-bound alert storm, CPU utilisation sits ~25–50% (below the 70% trigger) so the team's
+*Under an I/O-bound alert storm, CPU utilisation sits ~10–35% (peaking ~55–59%, still below the 70% trigger) so the team's
 CPU-HPA holds replicas at 2, while p99 breaches to ~3–5s with zero errors (pure queueing) and near-zero
 CFS throttling — proving CPU is the wrong scaling signal for this workload.*
 

@@ -31,3 +31,10 @@ NAME               REFERENCE            TARGETS      MINPODS   MAXPODS   REPLICA
 keda-hpa-iocheck   Deployment/iocheck   0/12 (avg)   2         8         2          8m58s
 iocheck-74b47465f7-48rt6   0     iocheck-worker
 iocheck-74b47465f7-msvn8   0     iocheck-worker
+
+VERDICT: RPS did NOT scale — completed-RPS is capacity-coupled: the 2-pod pool caps throughput to ~24 RPS
+total = ~12/pod = the threshold (12), so the HPA reads "at target" (within its ~10% tolerance) and holds at
+2, even at p99=5s. The two candidate signals on this SAME storm (peak, from Prometheus max_over_time):
+  completed RPS/pod   = 24.7 / 2 = ~12.4   (at threshold -> no scale)
+  in-flight/pod       = 81   / 2 = ~40     (offered load; NOT pool-capped -> would scale)
+=> switched the trigger to in-flight concurrency (see logs/M6-keda-concurrency.log).

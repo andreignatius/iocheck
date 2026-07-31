@@ -20,14 +20,14 @@ Dated record of progress, checked against [`plan.md`](./plan.md). Legend: `[x]` 
 ## Status vs deliverables (§8)
 
 - [x] Source + manifests + Dockerfile + Makefile — *source ✅ + Dockerfile ✅ + k8s manifests ✅ + Makefile ✅*
-- [ ] README (reproduces setup from clean state) — *M9*
+- [x] README (reproduces setup from clean state) — *`make cluster-down && make all` VERIFIED clean (2026-07-31); prose pending Andre review*
 - [x] Load-test tool (k6 script) — `k8s/loadtest/lookup-storm.js` + `make loadtest`
-- [ ] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture) — *M9*
+- [~] Writeup (~1–2pp: architecture + 4 answers + data-source-down + one-week + security posture) — *REPORT.md drafted; Andre to review*
 - [x] AI chat logs — `docs/transcript.md` (recording, verbatim + timestamps)
 
 ## Four challenges (§7) — ALL DEMONSTRATED
 
-- [x] #1 Why CPU HPA is wrong (measured evidence) — M5: CPU 10–35%, replicas pinned at 2, p99 5s (`logs/M5-cpu-hpa-baseline.log`)
+- [x] #1 Why CPU HPA is wrong (measured evidence) — M5: CPU ~10–35% (peak ~59%, still <70%), replicas pinned at 2, p99 ~5s (`logs/M5-cpu-hpa-baseline.log`)
 - [x] #2 Pods share load (keep-alive trap) — M6: per-pod RPS even across 7 pods (`noConnectionReuse` churn fix)
 - [x] #3 Autoscaler up & down, defend min/max — M6: KEDA concurrency 2→7→2, min2/max8 defended
 - [x] #4 Reproducible test — M6: `k8s/loadtest/lookup-storm.js` + `make loadtest`
@@ -194,7 +194,7 @@ Implemented Option A: `STORE_LOOKUP_LATENCY_MS` via **`pg_sleep` on a held poole
 Locked demo config (Andre signed off both): **L=700ms** (models a slow remote reputation/feed lookup; calibrated to reproduce the prompt's stated 2–3s p99; env-gated, off by default, documented) + **cpu request 200m** (right-sized to peak usage ~130m + headroom → even ramp bursts <70%). Applied the team's failed config as a throwaway HPA (`k8s/baseline/cpu-hpa.yaml`: Utilization 70%, min2/max8).
 
 **Baseline capture (evidence: `logs/M5-cpu-hpa-baseline.log`):**
-- **HPA CPU util 10–35%/70% → REPLICAS pinned at 2** the entire storm — CPU-HPA never scaled.
+- **HPA CPU util ~10–35% (peak ~59%), always < the 70% trigger → REPLICAS pinned at 2** the entire storm — CPU-HPA never scaled.
 - **p99 breached to ~3–5s** (k6: avg 1.96s, med 2s, p95 2.94s, max 6.69s) — 15–24× the 200ms SLO.
 - **k6 SLO gate `p(99)<200ms` FAILED** (documented proof); **100% status-200, 0 failures** (3413 reqs) → latency is *pure queueing*, not 500s (connection-timeout tuning §6a#3 worked).
 - **CFS throttle ~0** (§6a#4 ✓); **restarts 0** (§6a#15 ✓).
@@ -254,6 +254,51 @@ Switched ScaledObject trigger to in-flight concurrency (`avg_over_time(sum(http_
 - **Money-shot captured** from the retained 01:41 data (re-cropped to 01:38–01:50): `docs/evidence/m6-challenge3-keda-scaling.png` — replicas hold at 7 while **p99 drops 5s→2s mid-load** (scaling drains the queue in real time), then 7→2. + `m6-overview.png`, `m6-cpu-vs-p99.png`. Evidence README updated.
 - **M6 done. All 4 required challenges DEMONSTRATED** (#1 M5; #2/#3/#4 M6). M7 (load-sharing) folded into M6.
 - **Remaining:** M8 (chaos — EXTRA, not a required challenge; defer to fresh session), then M9 (writeup + README + Makefile polish). *Corrected my earlier "just writeup after M6" — M8 exists but is optional extra credit.*
+
+### 2026-07-31 02:39 — M9 drafted (writeup + README + Makefile) — awaiting Andre review
+Fixed transcript Turn 41 → split into verbatim Turns 41–45. Confirmed M7 done (folded M6), M8 extra/deferred.
+Drafted M9 (cluster-free, doc-only):
+- **`REPORT.md`** (~2pp): architecture; the 4 challenges w/ evidence links; the honest **modeled-latency disclosure** + **RPS→concurrency** finding; data-source-down (KEDA `fallback: 4` + Redis fail-open); security posture; "with another week"; AI-tools disclosure.
+- **`README.md`**: prepended a solution overview + **reproduce-from-clean** section (`cp .env.example .env` → `make all` → `make loadtest`) + repo layout; kept the StrongKeep brief below.
+- **`Makefile`**: added **`make all`** (cluster-up → calico → deploy → observability) for one-command clean spin-up.
+- Deliverables now: source/manifests/Dockerfile/Makefile ✅, k6 tool ✅, AI logs ✅, README ~ (draft), Writeup ~ (draft).
+- **Remaining:** Andre reviews REPORT/README; optional M8 chaos (fresh session); then commit + submit.
+
+### 2026-07-31 03:05 — Fix: `make all` ordering bug (Andre catch)
+Andre spotted that `all: cluster-up calico deploy observability` would fail on a fresh cluster: **`deploy`
+(`kubectl apply -f k8s/manifests/`) applies `70-keda-scaledobject.yaml` (`kind: ScaledObject`,
+`keda.sh/v1alpha1`), but the KEDA CRD isn't installed until `observability` (step 4)** → "no matches for
+kind ScaledObject". Verified via sources (deploy's apply target + the manifest kind + which step installs
+KEDA). **Fix: reordered to `cluster-up → calico → observability → deploy`** (platform incl. KEDA first, then
+app; within deploy's bulk apply the Deployment `40-…` still precedes the ScaledObject `70-…` alphabetically).
+Also fixed the two docs that showed the wrong order (README reproduce comment + REPORT reproduce line → `make
+all`). `make -n all` parses OK. Full end-to-end `make all` on a *fresh* cluster is the remaining verification
+(deferred — avoid thrashing tonight's fragile cluster).
+
+### 2026-07-31 03:19 — Fact-check sweep of REPORT/README vs the logs (Andre catch)
+Andre flagged REPORT's "CPU ~10–35%" contradicting its own linked log (which peaks **59%** at 22:27:27). Swept everything:
+- **BIG find:** `logs/M6-keda-concurrency.log` had been **overwritten** by the errant threshold=8 run (header said "threshold=8", all rows REPS=2, empty columns) — the "2→7→2 / per-pod 10.2,10.3,…" evidence REPORT #2/#3 cites was gone. **Restored** from the captured **threshold=10** run (01:41–01:47, the run the screenshot shows) with a provenance note.
+- **CPU number** corrected `~10–35%` → **`~10–35% for most of the storm, peaking ~59% (still <70%)`** in: REPORT #1, `logs/M5-cpu-hpa-baseline.log` VERDICT (was "15–34%"), `logs/README.md` M5 row, journal (challenges checklist + M5 entry), `docs/evidence/README.md` (×2). *(Left the historical transcript summaries as-is — they're the record of what was said at the time.)*
+- **Throttle** `~0` → **`low (≲0.4/s)`** (log peaks 0.42) in REPORT + logs README.
+- **Backed REPORT #3's "in-flight ~40/pod vs RPS ~12/pod"** by adding the measured comparison (RPS/pod 12.4, in-flight/pod 40) to `logs/M6-keda-scaling.log` VERDICT.
+- **Verified OK** (no change): p99 ~5s (25× SLO), replicas pinned at 2, k6 `p(99)<200` FAILED + 0 errors (3413 reqs), RPS capacity-coupled ~12/pod, 2→7→2, min=2/max=8 defense (§O4/§O8), fallback `replicas:4`, Redis fail-open, NetworkPolicy segmentation, security posture, README reproduce + `make all` order.
+
+### 2026-07-31 09:42 — Clean spin-up VERIFIED end-to-end (`make cluster-down && make all`)
+Ran the full clean rebuild (evidence: `logs/M9-clean-spinup.log`). **`make` exited 0.** The whole chain ran
+in the fixed order — cluster-up → calico → observability (metrics-server/prometheus/grafana/**keda**) → deploy
+— and critically **`scaledobject.keda.sh/iocheck created`** during deploy with NO "no matches for kind
+ScaledObject" error → **the M9 ordering fix is confirmed end-to-end.** Post-run: 3 nodes Ready (v1.32.5);
+iocheck ×2 (spread across both workers) + postgres + redis Running; Prometheus/Grafana/KEDA Running;
+**ScaledObject READY=True, ACTIVE=True**; smoke test (healthz/readyz/lookup→malicious) passes. The earlier
+host-CPU thrash was load-specific (storms) — a clean *build/deploy* runs fine. README "reproduce from clean
+state" now VERIFIED. (Also regenerated a clean cluster; a fresh `make loadtest` would now give live M6 data.)
+
+### 2026-07-31 09:55 — README/REPORT sweep vs the brief (Andre catches)
+Andre spotted a spurious prereq + a brief-contradiction; swept README+REPORT against the brief's full requirement list. Fixes:
+- **`helm` removed** from README prereqs — not used anywhere (Calico/KEDA/metrics-server are vendored raw manifests; Prom/Grafana are ours). (The brief's own "or Helm" line is StrongKeep's text — left as-is.)
+- **`/readyz` deliberate-deviation now documented** in REPORT: brief says "200 only when DB *and cache*"; we gate on **Postgres only** because Redis-gating = SPOF (one blip → all pods NotReady → total outage) — Redis is soft/fail-open, reachability via `cache_up`. Added the explicit "(one-line change to honour the literal wording if required)" note.
+- **Gaps the writeup missed (in code but not REPORT) — added:** all **3 probes** (startup/liveness/readiness), **requests + limits on every container**, cache **TTL + invalidate-on-`/ioc`-upsert**.
+- **Full cross-check vs brief:** every requirement (API endpoints, storage+cache, workload, platform [kind/Dockerfile/manifests/probes/PDB/limits/autoscaling], 4 challenges, data-source-down, one-week, AI disclosure) now present in REPORT/README. No contradictions between our README section and REPORT.
 
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.

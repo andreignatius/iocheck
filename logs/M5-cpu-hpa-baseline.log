@@ -31,5 +31,6 @@ iocheck-74b47465f7-msvn8   0
    ✗ http_req_duration ..........: avg=1.96s  med=2s  p95=2.94s  max=6.69s
    ✗ thresholds on http_req_duration crossed  ->  k6 SLO gate p(99)<200ms FAILED (as intended under CPU-HPA)
 
-VERDICT: CPU util stayed ~15–34% (< 70% trigger) -> CPU-HPA held replicas at 2,
-         while p99 breached to ~3-4.7s (>=15x the 200ms SLO). CPU is blind to the I/O bottleneck.
+VERDICT: CPU util was ~10–35% for most of the storm, peaking ~59% (one 22:27:27 sample) -> STILL below the
+         70% trigger, so CPU-HPA held replicas at 2, while p99 breached to ~3–5s (>=15x the 200ms SLO).
+         CPU is blind to the I/O bottleneck.

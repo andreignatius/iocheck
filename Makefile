@@ -47,6 +47,14 @@ NS := iocheck
 
 .PHONY: cluster-up cluster-down calico k8s-image kind-load secret deploy undeploy cluster-status
 
+# Order matters: observability installs the KEDA CRD BEFORE deploy applies the ScaledObject.
+all: cluster-up calico observability deploy ## FULL clean spin-up: cluster + CNI + monitoring/KEDA, THEN app
+	@echo ""
+	@echo "iocheck is up. Next:"
+	@echo "  make loadtest        # drive the alert-storm load"
+	@echo "  make grafana-open    # dashboards at http://localhost:3001/d/iocheck-overview"
+	@echo "  make cluster-status  # nodes + pods"
+
 cluster-up: ## Create the multi-node kind cluster (no CNI yet)
 	kind create cluster --config k8s/kind-config.yaml
 

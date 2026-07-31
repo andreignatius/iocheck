@@ -1,3 +1,51 @@
+# iocheck — solution (Andre)
+
+A threat-intel IOC lookup service that autoscales on the signal that actually reflects this I/O-bound
+workload. **Full writeup + the four challenge answers are in [REPORT.md](REPORT.md);** design/build logs are
+in [docs/plan.md](docs/plan.md) and [docs/journal.md](docs/journal.md); the AI collaboration transcript is
+in [docs/transcript.md](docs/transcript.md); evidence (logs + screenshots) in [logs/](logs/) and
+[docs/evidence/](docs/evidence/). The original brief is preserved at the bottom of this file.
+
+## Prerequisites
+Docker · `kind` · `kubectl` (v1.32.x, matching the pinned node image) · Node ≥ 18 (for local unit tests only).
+(No Helm — Calico, KEDA, and metrics-server are **vendored as pinned raw manifests** for reproducibility; Prometheus/Grafana are our own manifests.)
+
+## Reproduce from a clean state
+```bash
+cp .env.example .env         # then fill in the secrets (all gitignored)
+
+make all                     # cluster (kind + Calico CNI) → Prometheus/Grafana/KEDA → app
+                             #   = cluster-up → calico → observability → deploy
+                             #   (KEDA is installed before the app so its ScaledObject applies cleanly)
+make cluster-status          # nodes Ready + all pods Running
+
+# drive the alert-storm load (in-cluster k6 Job against the Service)
+make loadtest ; make loadtest-logs
+
+# dashboards (money-shot panels): http://localhost:3001/d/iocheck-overview
+make grafana-open
+
+make cluster-down            # tear it all down
+```
+`make help` lists every target. Local (no cluster): `make test` (unit tests) and `make up` / `make smoke`
+(docker-compose stack).
+
+## What the autoscaler reads
+KEDA scales on **in-flight concurrency per pod** (`avg_over_time(sum(http_in_flight_requests)[30s:5s])`,
+`AverageValue`, threshold 10) — see [`k8s/manifests/70-keda-scaledobject.yaml`](k8s/manifests/70-keda-scaledobject.yaml)
+and REPORT.md §#3 for why RPS was the wrong choice here.
+
+## Repo layout
+```
+src/                 the service (Express + TS)         k8s/manifests/    app + KEDA manifests
+k8s/kind-config.yaml pinned multi-node cluster          k8s/monitoring/   Prometheus + Grafana (as code)
+k8s/calico-*.yaml    vendored CNI                        k8s/loadtest/     k6 storm (the load-test tool)
+db/init.sh           schema + least-priv role (§S2)      k8s/baseline/     throwaway CPU-HPA (challenge #1)
+Dockerfile           distroless, non-root                Makefile          every workflow target
+```
+
+---
+
 # iocheck — Build & Scale Challenge
 
 Build a small threat-intel lookup service and make it autoscale correctly on Kubernetes.

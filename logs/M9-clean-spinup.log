@@ -1,0 +1,255 @@
+# iocheck — clean spin-up verification: make cluster-down && make all
+# started: 2026-07-31 09:31 +08
+# purpose: verify the make-all ordering fix (observability before deploy) works from scratch
+
+kind delete cluster --name iocheck
+Deleting cluster "iocheck" ...
+Deleted nodes: ["iocheck-control-plane" "iocheck-worker" "iocheck-worker2"]
+kind create cluster --config k8s/kind-config.yaml
+Creating cluster "iocheck" ...
+ • Ensuring node image (kindest/node:v1.32.5) 🖼  ...
+ ✓ Ensuring node image (kindest/node:v1.32.5) 🖼
+ • Preparing nodes 📦 📦 📦   ...
+ ✓ Preparing nodes 📦 📦 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+ • Joining worker nodes 🚜  ...
+ ✓ Joining worker nodes 🚜
+Set kubectl context to "kind-iocheck"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-iocheck
+
+Not sure what to do next? 😅  Check out https://kind.sigs.k8s.io/docs/user/quick-start/
+kubectl apply -f k8s/calico-v3.28.2.yaml
+poddisruptionbudget.policy/calico-kube-controllers created
+serviceaccount/calico-kube-controllers created
+serviceaccount/calico-node created
+serviceaccount/calico-cni-plugin created
+configmap/calico-config created
+customresourcedefinition.apiextensions.k8s.io/bgpconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/bgpfilters.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/bgppeers.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/blockaffinities.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/caliconodestatuses.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/clusterinformations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/felixconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/globalnetworkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/globalnetworksets.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/hostendpoints.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamblocks.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamconfigs.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamhandles.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ippools.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipreservations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/kubecontrollersconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/networkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/networksets.crd.projectcalico.org created
+clusterrole.rbac.authorization.k8s.io/calico-kube-controllers created
+clusterrole.rbac.authorization.k8s.io/calico-node created
+clusterrole.rbac.authorization.k8s.io/calico-cni-plugin created
+clusterrolebinding.rbac.authorization.k8s.io/calico-kube-controllers created
+clusterrolebinding.rbac.authorization.k8s.io/calico-node created
+clusterrolebinding.rbac.authorization.k8s.io/calico-cni-plugin created
+daemonset.apps/calico-node created
+deployment.apps/calico-kube-controllers created
+kubectl -n kube-system rollout status ds/calico-node --timeout=180s
+Waiting for daemon set "calico-node" rollout to finish: 0 of 3 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 1 of 3 updated pods are available...
+Waiting for daemon set "calico-node" rollout to finish: 2 of 3 updated pods are available...
+daemon set "calico-node" successfully rolled out
+kubectl apply -f k8s/metrics-server-v0.7.2.yaml
+serviceaccount/metrics-server created
+clusterrole.rbac.authorization.k8s.io/system:aggregated-metrics-reader created
+clusterrole.rbac.authorization.k8s.io/system:metrics-server created
+rolebinding.rbac.authorization.k8s.io/metrics-server-auth-reader created
+clusterrolebinding.rbac.authorization.k8s.io/metrics-server:system:auth-delegator created
+clusterrolebinding.rbac.authorization.k8s.io/system:metrics-server created
+service/metrics-server created
+deployment.apps/metrics-server created
+apiservice.apiregistration.k8s.io/v1beta1.metrics.k8s.io created
+kubectl -n kube-system rollout status deploy/metrics-server --timeout=120s
+Waiting for deployment "metrics-server" rollout to finish: 0 of 1 updated replicas are available...
+deployment "metrics-server" successfully rolled out
+kubectl apply -f k8s/monitoring/00-namespace.yaml
+namespace/monitoring created
+kubectl apply -f k8s/monitoring/10-prometheus.yaml
+serviceaccount/prometheus created
+clusterrole.rbac.authorization.k8s.io/prometheus created
+clusterrolebinding.rbac.authorization.k8s.io/prometheus created
+configmap/prometheus-config created
+deployment.apps/prometheus created
+service/prometheus created
+kubectl -n monitoring rollout status deploy/prometheus --timeout=120s
+Waiting for deployment "prometheus" rollout to finish: 0 of 1 updated replicas are available...
+deployment "prometheus" successfully rolled out
+kubectl apply -f k8s/monitoring/00-namespace.yaml
+namespace/monitoring unchanged
+kubectl create configmap grafana-dashboard-iocheck -n monitoring \
+	  --from-file=iocheck-overview.json=k8s/monitoring/grafana-dashboards/iocheck-overview.json \
+	  --dry-run=client -o yaml | kubectl apply -f -
+configmap/grafana-dashboard-iocheck created
+kubectl apply -f k8s/monitoring/20-grafana.yaml
+configmap/grafana-datasources created
+configmap/grafana-dashboard-provider created
+deployment.apps/grafana created
+service/grafana created
+kubectl -n monitoring rollout status deploy/grafana --timeout=120s
+Waiting for deployment "grafana" rollout to finish: 0 of 1 updated replicas are available...
+deployment "grafana" successfully rolled out
+kubectl apply --server-side -f k8s/keda-2.17.1.yaml
+namespace/keda serverside-applied
+customresourcedefinition.apiextensions.k8s.io/cloudeventsources.eventing.keda.sh serverside-applied
+customresourcedefinition.apiextensions.k8s.io/clustercloudeventsources.eventing.keda.sh serverside-applied
+customresourcedefinition.apiextensions.k8s.io/clustertriggerauthentications.keda.sh serverside-applied
+customresourcedefinition.apiextensions.k8s.io/scaledjobs.keda.sh serverside-applied
+customresourcedefinition.apiextensions.k8s.io/scaledobjects.keda.sh serverside-applied
+customresourcedefinition.apiextensions.k8s.io/triggerauthentications.keda.sh serverside-applied
+serviceaccount/keda-operator serverside-applied
+role.rbac.authorization.k8s.io/keda-operator serverside-applied
+clusterrole.rbac.authorization.k8s.io/keda-external-metrics-reader serverside-applied
+clusterrole.rbac.authorization.k8s.io/keda-operator serverside-applied
+rolebinding.rbac.authorization.k8s.io/keda-operator serverside-applied
+rolebinding.rbac.authorization.k8s.io/keda-auth-reader serverside-applied
+clusterrolebinding.rbac.authorization.k8s.io/keda-hpa-controller-external-metrics serverside-applied
+clusterrolebinding.rbac.authorization.k8s.io/keda-operator serverside-applied
+clusterrolebinding.rbac.authorization.k8s.io/keda-system-auth-delegator serverside-applied
+service/keda-admission-webhooks serverside-applied
+service/keda-metrics-apiserver serverside-applied
+service/keda-operator serverside-applied
+deployment.apps/keda-admission serverside-applied
+deployment.apps/keda-metrics-apiserver serverside-applied
+deployment.apps/keda-operator serverside-applied
+apiservice.apiregistration.k8s.io/v1beta1.external.metrics.k8s.io serverside-applied
+validatingwebhookconfiguration.admissionregistration.k8s.io/keda-admission serverside-applied
+kubectl -n keda rollout status deploy/keda-operator --timeout=150s
+Waiting for deployment "keda-operator" rollout to finish: 0 of 1 updated replicas are available...
+deployment "keda-operator" successfully rolled out
+docker build -t iocheck:0.1.3           .
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 815B 0.0s done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1
+#2 DONE 1.9s
+
+#3 docker-image://docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+#3 resolve docker.io/docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89 0.0s done
+#3 CACHED
+
+#4 [internal] load metadata for gcr.io/distroless/nodejs20-debian12:nonroot
+#4 DONE 1.3s
+
+#5 [internal] load metadata for docker.io/library/node:20-alpine
+#5 DONE 1.4s
+
+#6 [internal] load .dockerignore
+#6 transferring context: 318B done
+#6 DONE 0.0s
+
+#7 [runtime 1/4] FROM gcr.io/distroless/nodejs20-debian12:nonroot@sha256:2cd820156cf039c8b54ae2d2a97e424b6729070714de8707a6b79f20d56f6a9a
+#7 resolve gcr.io/distroless/nodejs20-debian12:nonroot@sha256:2cd820156cf039c8b54ae2d2a97e424b6729070714de8707a6b79f20d56f6a9a 0.0s done
+#7 DONE 0.0s
+
+#8 [builder 1/7] FROM docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+#8 resolve docker.io/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 0.0s done
+#8 DONE 0.0s
+
+#9 [internal] load build context
+#9 transferring context: 1.19kB done
+#9 DONE 0.0s
+
+#10 [runtime 3/4] COPY --from=builder /app/node_modules ./node_modules
+#10 CACHED
+
+#11 [builder 3/7] COPY package.json package-lock.json ./
+#11 CACHED
+
+#12 [runtime 2/4] WORKDIR /app
+#12 CACHED
+
+#13 [builder 5/7] COPY tsconfig.json ./
+#13 CACHED
+
+#14 [builder 7/7] RUN npm run build && npm prune --omit=dev
+#14 CACHED
+
+#15 [builder 2/7] WORKDIR /app
+#15 CACHED
+
+#16 [builder 4/7] RUN npm ci
+#16 CACHED
+
+#17 [builder 6/7] COPY src ./src
+#17 CACHED
+
+#18 [runtime 4/4] COPY --from=builder /app/dist ./dist
+#18 CACHED
+
+#19 exporting to image
+#19 exporting layers 0.0s done
+#19 exporting manifest sha256:5f1a4a60250c31dfb8df47dfb6b4451345d52089552e50551475850d26d92401 done
+#19 exporting config sha256:1fa1bf0263980fd4ce71400f85b8887f0e8ca1c234cb148209d11a61a2faaade done
+#19 exporting attestation manifest sha256:3b9b66dfd13ecb934e35d4d16398b52be2fe8a17b7fcd81a835cce0d518ab8ae
+#19 exporting attestation manifest sha256:3b9b66dfd13ecb934e35d4d16398b52be2fe8a17b7fcd81a835cce0d518ab8ae 0.0s done
+#19 exporting manifest list sha256:f34ae0a306f4a079ba0c5f37a4d334c2bd4dbd3d1f9f95e2edbfc6601901c943 0.0s done
+#19 naming to docker.io/library/iocheck:0.1.3 0.0s done
+#19 unpacking to docker.io/library/iocheck:0.1.3 0.0s done
+#19 DONE 0.2s
+kind load docker-image iocheck:0.1.3           --name iocheck
+Image: "iocheck:0.1.3" with ID "sha256:f34ae0a306f4a079ba0c5f37a4d334c2bd4dbd3d1f9f95e2edbfc6601901c943" not yet present on node "iocheck-worker", loading...
+Image: "iocheck:0.1.3" with ID "sha256:f34ae0a306f4a079ba0c5f37a4d334c2bd4dbd3d1f9f95e2edbfc6601901c943" not yet present on node "iocheck-worker2", loading...
+Image: "iocheck:0.1.3" with ID "sha256:f34ae0a306f4a079ba0c5f37a4d334c2bd4dbd3d1f9f95e2edbfc6601901c943" not yet present on node "iocheck-control-plane", loading...
+kubectl apply -f k8s/manifests/00-namespace.yaml
+namespace/iocheck created
+serviceaccount/iocheck created
+/Applications/Xcode.app/Contents/Developer/usr/bin/make secret
+secret/iocheck-secrets created
+kubectl create configmap iocheck-pg-init -n iocheck --from-file=init.sh=db/init.sh \
+	  --dry-run=client -o yaml | kubectl apply -f -
+configmap/iocheck-pg-init created
+kubectl apply -f k8s/manifests/
+namespace/iocheck unchanged
+serviceaccount/iocheck unchanged
+configmap/iocheck-config created
+service/postgres created
+statefulset.apps/postgres created
+service/redis created
+deployment.apps/redis created
+service/iocheck created
+deployment.apps/iocheck created
+poddisruptionbudget.policy/iocheck created
+networkpolicy.networking.k8s.io/default-deny created
+networkpolicy.networking.k8s.io/allow-dns-egress created
+networkpolicy.networking.k8s.io/iocheck-egress-datastores created
+networkpolicy.networking.k8s.io/postgres-ingress-from-iocheck created
+networkpolicy.networking.k8s.io/redis-ingress-from-iocheck created
+networkpolicy.networking.k8s.io/iocheck-ingress created
+scaledobject.keda.sh/iocheck created
+kubectl -n iocheck rollout status deploy/iocheck --timeout=180s
+Waiting for deployment "iocheck" rollout to finish: 0 of 2 updated replicas are available...
+Waiting for deployment "iocheck" rollout to finish: 1 of 2 updated replicas are available...
+deployment "iocheck" successfully rolled out
+
+iocheck is up. Next:
+  make loadtest        # drive the alert-storm load
+  make grafana-open    # dashboards at http://localhost:3001/d/iocheck-overview
+  make cluster-status  # nodes + pods
+
+# make finished: 09:36 +08
+
+===== POST-RUN VERIFICATION (2026-07-31 09:42 +08) =====
+make exit: 0 (clean); the ScaledObject applied during 'deploy' (line ~234) => ordering fix confirmed:
+  observability installs the KEDA CRD BEFORE deploy applies kind:ScaledObject.
+  node iocheck-control-plane: Ready v1.32.5
+  node iocheck-worker: Ready v1.32.5
+  node iocheck-worker2: Ready v1.32.5
+  scaledobject: READY=True, ACTIVE=True (keda-hpa-iocheck 1/10 avg, min2/max8, 2 replicas idle)
+  smoke: healthz+readyz OK, lookup(203.0.113.7) => malicious (verified via port-forward)
+VERDICT: 'make cluster-down && make all' reproduces the full stack from clean; all 4 pods + platform Ready; ScaledObject READY.
