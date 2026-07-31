@@ -1054,4 +1054,88 @@ Added the `/ioc` audit trail (image 0.1.5). `auth.ts`: on success stashes a cred
 
 ### Claude (summary)
 
-**Validated the connection-stickiness reasoning** — correct on every point (Service LB is per-connection via conntrack, keep-alive pins requests to the connect-time pod, `noConnectionReuse` is a *test-client* property, server-side `maxRequestsPerSocket`/`keepAliveTimeout` is the real lever we control; added that an **L7 proxy/mesh** balancing per-request is the complete fix). Rewrote **#2** to reframe the k6 churn as *proof the Service can balance once connections cycle* and to add the server-side + L7 production answers. Tightened **#4's `replicas: 4`** with a **math argument**: scaling is multiplicative, so the middle of `[2,8]` is the **geometric mean √(2·8)=4 = 2×min = max/2** → symmetric (~2×) scaling error either way vs a 4× under-provision at min; plus backend-safety (4×10=40 in-flight/DB conns < 100). Offered to also *implement* `maxRequestsPerSocket` as a one-liner (doc currently presents it as the production lever, consistent with how PgBouncer/TLS are discussed).
+**Validated the connection-stickiness reasoning** — correct on every point (Service LB is per-connection via conntrack, keep-alive pins requests to the connect-time pod, `noConnectionReuse` is a *test-client* property, server-side `maxRequestsPerSocket`/`keepAliveTimeout` is the real lever we control; added that an **L7 proxy/mesh** balancing per-request is the complete fix). Rewrote **#2** to reframe the k6 churn as *proof the Service can balance once connections cycle* and to add the server-side + L7 production answers. Tightened **#4's `replicas: 4`** with a **math argument**: scaling is multiplicative, so the middle of `[2,8]` is the **geometric mean √(2·8)=4 = 2×min = max/2** → symmetric (~2×) scaling error either way vs a 4× under-provision at min; plus backend-safety (4×10=40 in-flight/DB conns < 100). Offered to also *implement* `maxRequestsPerSocket` as a one-liner (doc currently presents it as the production lever, consistent with how PgBouncer/TLS are discussed). Andre chose to **leave it documented** (no code change).
+
+---
+
+## Turn 55 — 2026-07-31 14:33 +08
+
+### Andre (verbatim)
+
+> hey can we do automated tests on your end e2e from top to bottom from scratch just to double check everything is ok?
+>
+> may i ask if there are any dependencies that are not logged in yet like in package.json or Dockerfile etc?
+>
+> likely share all the cmds you used and then later i'll do a manual check on my own side later
+>
+> what do you think?
+
+### Claude (summary)
+
+Ran a two-phase check. **(A) Dependency audit (static):** all runtime imports declared in package.json; package-lock present; all 10 vendored manifests present + every image pinned (kind node by digest); no curl/wget in `make all`. **Fixed 3 gaps:** `METRICS_PORT` missing from `.env.example`, Dockerfile `EXPOSE 3000`→`3000 9464`, `package.json` version `0.1.3`→`0.1.5`. **(B) From-scratch e2e:** `make cluster-down && make all` → **exit 0** (~11.5 min), image rebuilt 0.1.5, all pods Running ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log)). Functional re-verify was **blocked by host CPU starvation** (Docker Desktop VM saturated by the cold start) — diagnosed as environmental, **not** an app fault: no MemoryPressure/DiskPressure, restarts were `Completed exit=0` (graceful drain) + one `137` (liveness-kill), i.e. probe timeouts not OOM/crash; same 0.1.5 already verified green earlier this session. Recommended: bump Docker Desktop resources, spin up early + settle (don't `make all` live), and a **robustness finding** — `livenessProbe` has no `timeoutSeconds` (default 1s) → needless restarts under transient slowness; bump to 3–5s + higher failureThreshold. Shared all commands. Offered to (a) tear the cluster down to relieve the host and (b) apply the liveness-timeout hardening.
+
+---
+
+## Turn 56 — 2026-07-31 14:36 +08
+
+### Andre (verbatim)
+
+> have we documented all of this in journal?
+
+### Claude (summary)
+
+Confirmed: **journal** — yes, the `14:30` entry captures the dependency audit + 3 fixes, the build PASS, the host-starvation diagnosis, and the recommendations; [`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) holds the full output + diagnosis. **Transcript** — was behind by the e2e turn; added Turns 55–56 here to keep the AI-chat-log deliverable complete.
+
+---
+
+## Turn 57 — 2026-07-31 14:40 +08
+
+### Andre (verbatim)
+
+> i also ran
+>
+> ```
+> for p in $(kubectl get pods -n iocheck -l app=iocheck -o name); do
+>   echo "== $p =="
+>   kubectl describe -n iocheck "$p" | grep -A6 'Last State'
+> done
+>
+> == pod/iocheck-5644498b9c-2dg82 ==
+>     Last State:     Terminated
+>       Reason:       Error
+>       Exit Code:    137
+>       ...
+> == pod/iocheck-5644498b9c-bf54n ==
+>     Last State:     Terminated
+>       Reason:       Completed
+>       Exit Code:    0
+>       ...
+> ```
+>
+> reason is error exit code = 137 not necessarily OOMKilled
+>
+> [quoted the journal line "no MemoryPressure/DiskPressure ... probe timeouts, not OOM/crash"]
+>
+> instead of no MemoryPressure/DiskPressure can we just mention as container-reason evidence?
+>
+> agree with both:
+> (a) make cluster-down now to relieve the host, and
+> (b) apply the liveness timeoutSeconds hardening (manifest-only, image stays 0.1.5) — the one genuine improvement the e2e surfaced.
+
+### Claude (summary)
+
+Agreed and went further: node `MemoryPressure=False` is the *wrong* signal to rule out OOM (a cgroup memory-**limit** OOM reports `Reason: OOMKilled` even with node pressure False), so the **authoritative** evidence is the container reason — `Error`(137)/`Completed`(0), **never `OOMKilled`**. Rewrote the diagnosis in journal + [`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) to lead with container-reason evidence. **(b)** Added explicit `timeoutSeconds` to all three probes (startup 3 / liveness 5 / readiness 3; default 1s) + startup `failureThreshold` 30→45 in 40-iocheck.yaml (manifest-only, image stays 0.1.5); YAML validated. **(a)** `make cluster-down` → exit 0, host relieved.
+
+---
+
+## Turn 58 — 2026-07-31 16:06 +08
+
+### Andre (verbatim)
+
+> [screenshots: MacBook Air M1 2020, 16 GB, macOS Sonoma 14.1.1; Docker Desktop Resources — CPU limit 6, Memory limit 12 GB]
+>
+> looks OK? i just restarted... can you proceed to do your thing?
+
+### Claude (summary)
+
+Confirmed the allocation (6 CPU / 12 GB — exactly recommended) and clean state, then found + removed a **stale 22h docker-compose stack** that had been draining the Docker VM. Ran the full sequence autonomously: `make all` → **5 min hands-off settle** → settle-gate → verify. **RUN 2 = ALL GREEN:** build exit 0 in **5m41s**, **zero pod restarts** (settled instantly, was 8×/8×/5×/5× before), and V1 smoke + V2 metrics-split + V3 audit + V4 NetworkPolicy all pass ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 2). Confirmed RUN 1's failure was purely host capacity, not code. Cluster left up + healthy for Andre's own manual check.

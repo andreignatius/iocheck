@@ -17,6 +17,7 @@ ENV NODE_ENV=production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 USER nonroot
-EXPOSE 3000
+EXPOSE 3000 9464
+# 3000 = public API, 9464 = /metrics (separate port, monitoring-only via NetworkPolicy, §S8).
 # Distroless ENTRYPOINT is node, so CMD is just the script path.
 CMD ["dist/index.js"]

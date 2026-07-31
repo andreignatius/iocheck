@@ -88,17 +88,25 @@ spec:
               # propagate while the app still serves (§O2).
               exec:
                 command: ["/nodejs/bin/node", "-e", "setTimeout(()=>{}, 5000)"]
+          # timeoutSeconds is set explicitly on every probe: it DEFAULTS to 1s, and a briefly
+          # CPU-starved event loop (e.g. a cold start on a resource-constrained host) can miss a
+          # 1s /healthz and trip a needless restart cascade — observed in the from-scratch e2e
+          # (logs/E2E-clean-run.log). 3–5s tolerates transient slowness while still catching a
+          # genuinely dead process (liveness still restarts after failureThreshold×periodSeconds).
           startupProbe:                       # allow a slow first start before liveness bites
             httpGet: { path: /healthz, port: http }
             periodSeconds: 1
-            failureThreshold: 30
+            timeoutSeconds: 3
+            failureThreshold: 45              # up to ~45s for a slow first start on a loaded host
           livenessProbe:                      # process-only (§O3) — never restart on a dep blip
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10
+            timeoutSeconds: 5                 # tolerate a briefly CPU-starved event loop (e2e finding)
             failureThreshold: 3
           readinessProbe:                     # PG hard / Redis soft (§O3)
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 3
           resources:
             # CPU request right-sized to the app's actual working set under load (§6a#1 co-tune):

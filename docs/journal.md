@@ -317,6 +317,28 @@ Added an audit trail to the crown-jewels write path. `auth.ts` stashes a credent
 - **#4 (`replicas: 4` fallback):** tightened to a math argument — scaling is multiplicative, so the blind-hold count is the **geometric mean √(min·max)=√(2·8)=4 = 2×min = max/2**; symmetric ~2× scaling error either way vs 4× under-provision at min; backend-safe (4×10=40 in-flight/DB conns < 100).
 - Doc-only; no code/manifest change, cluster untouched (still 0.1.5).
 
+### 2026-07-31 14:30 — full clean-state e2e (Andre) + dependency audit
+- **Dependency audit (static):** all runtime imports declared in package.json; package-lock present (npm ci OK); all 10 vendored manifests present + every image pinned (kind node by digest); no curl/wget in `make all`. **Fixed 3 gaps:** `METRICS_PORT` missing from `.env.example`; Dockerfile `EXPOSE 3000`→`3000 9464`; `package.json` version `0.1.3`→`0.1.5`.
+- **From-scratch build: PASS** — `make cluster-down && make all` → **exit 0** (~11.5 min), image rebuilt 0.1.5, all pods reached Running ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log)).
+- **Functional re-verify: environment-blocked, NOT a code fault.** After the cold start the Docker Desktop VM went into **CPU starvation** → liveness probes time out → pod restart cascade (iocheck 8×, pg/redis 5×). **Diagnosis by container-termination reason** (the authoritative signal): `lastState.terminated.Reason` was `Error`/`Completed`, **never `OOMKilled`** — so not an OOM kill (an OOMKill sets `Reason: OOMKilled` even when node `MemoryPressure=False`, since it's a cgroup-limit kill, so node pressure is the *wrong* signal to rely on). `exit 0 = Completed` = graceful SIGTERM drain; `exit 137 = Error` = SIGKILL after a liveness-kill didn't finish draining → **probe timeouts under CPU starvation, not OOM/crash**. Same 0.1.5 verified green earlier this session (S-logs). Port-forwards/scrapes couldn't hold under the load.
+- **Recommendations:** bump Docker Desktop CPU/RAM; spin up early + settle (don't `make all` live); **robustness finding** — `livenessProbe` has no `timeoutSeconds` (default 1s) → trips needless restarts on a briefly-starved event loop; bump `timeoutSeconds:3-5` + higher `failureThreshold`.
+
+### 2026-07-31 14:40 — diagnosis-wording fix + liveness hardening + cluster-down (Andre)
+- **Wording (Andre catch):** the OOM-ruling-out evidence was leaning on node `MemoryPressure=False`, which is the *wrong* signal — a cgroup memory-**limit** OOM reports `Reason: OOMKilled` even when node pressure is False. Corrected journal + E2E-log diagnosis to lead with the **authoritative container-termination reason**: `lastState.terminated.Reason` was `Error`(137)/`Completed`(0), **never `OOMKilled`** → not OOM; probe timeouts under CPU starvation.
+- **(b) Liveness hardening [applied, manifest-only]:** added explicit `timeoutSeconds` to all three probes (startup 3 / liveness 5 / readiness 3; default was 1s) + startup `failureThreshold` 30→45, in [`k8s/manifests/40-iocheck.yaml`](../k8s/manifests/40-iocheck.yaml). Tolerates a briefly CPU-starved event loop while still catching a genuinely dead process. Image stays 0.1.5; effective on next `make all`. YAML validated (parses; both ports intact).
+- **(a) `make cluster-down`** → exit 0, host relieved (was thrashing at 8×/8×/5×/5× restarts).
+
+### 2026-07-31 16:06 — clean e2e RUN 2 (post Docker 6CPU/12GB + probe hardening): ALL GREEN
+Re-ran from scratch after Andre bumped Docker (6 CPU / 12 GB) and I removed a stale 22h compose stack. **Everything passed, and the thrash is gone:**
+- `make all` **exit 0 in 5m41s** (was 11.5 min; more RAM + cached build layers).
+- **Settle-gate: `restarts [0 0 0 0]`, API 0s → settled immediately. ZERO restarts** on any pod (was 8×/8×/5×/5×). Resource bump + `timeoutSeconds` probe hardening fixed it.
+- **V1 smoke:** healthz, readyz(db:true,cache:true), malicious/unknown lookup, upsert+normalization (evil.com), IPv6 equivalence (::1), 401, 400, value-free metrics, :3000/metrics→404 — all pass.
+- **V2 §S8 split:** :3000/metrics→404, :9464→200, Prometheus scrapes both pods :9464 **up**, KEDA **Happy**.
+- **V3 §S7 audit:** 201/401, `ioc_upsert`+`ioc_auth_denied` lines, key absent from logs.
+- **V4 NetworkPolicy (clean re-run):** from default-ns pod → :3000/healthz **200** (open), :9464/metrics **000 exit=28** (blocked; monitoring-only).
+- Evidence: [`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 2 section. Cluster left **up and healthy** for Andre's own manual check.
+- **Confirmed root cause of RUN 1 failure was purely host capacity** (7.65 GB Docker RAM + stale compose stack + all-8-CPUs starving host tooling), not code — RUN 2 on identical 0.1.5 code + more resources is spotless.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).
