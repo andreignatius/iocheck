@@ -114,11 +114,13 @@ is directly comparable.
 > drains *queuing*, so p99 falls 5s → ~2s → toward ~700ms as pods are added, but never below the floor. That
 > floor exists solely to force the **I/O-bound regime** that makes a CPU-HPA fail and an autoscaler necessary
 > (see #1). The **stated workload is read-heavy and _cache-friendly_**: there, the vast majority of requests
-> are **sub-millisecond cache hits** and `p99 < 200ms` is met comfortably — the SLO pressure is cache
-> **hit-ratio** and tail misses, which the read-through + negative cache absorb. So the demo **deliberately
-> trades SLO compliance to isolate and prove the autoscaling behaviour**; it is *not* a claim that the design
-> misses its SLO under the workload it's built for. The `p(99)<200ms` gate stays *encoded* in the k6 script
-> precisely so this trade-off is visible, not hidden.
+> are **sub-millisecond cache hits** (the storms' *fastest* requests already clock ~0.46ms), so a
+> cache-friendly profile is dominated by the **hit-ratio**. `p99 < 200ms` is then *reachable* — but this is
+> the reasoned consequence, **not one I load-tested**: because p99 catches the top 1%, it needs either a very
+> high hit-ratio **or** bounding the miss latency (see *With another week*), since an un-bounded slow miss
+> lands squarely in the p99 tail. So the demo **deliberately trades SLO compliance to isolate and prove the
+> autoscaling behaviour**; it is *not* a claim that the design comfortably meets its SLO under any load. The
+> `p(99)<200ms` gate stays *encoded* in the k6 script precisely so this trade-off is visible, not hidden.
 
 > **Why not just lower `L` until the SLO passes?** `L` (`STORE_LOOKUP_LATENCY_MS`, env-tunable) is really a
 > **knob on the CPU↔I/O spectrum**, and what it *reveals* is the point. Concurrency scales on `rps × L`, so a
@@ -249,8 +251,14 @@ Honest catalog of what is **not** production-ready today — distinct from the p
    un-flagging.
 6. **Maintainability:** replace the first-boot `init.sh` with a **versioned migration tool** (`node-pg-migrate`)
    run as a **k8s Job/init-container** — `init.sh` is the standard Postgres-container init but only runs once
-   and doesn't track schema versions. As the route surface grows, extract a **controller layer** (the
-   business logic already lives in `service.ts`/`repository.ts`, so this is a thin HTTP-wiring split).
+   and doesn't track schema versions. (The controller layer is already split — `app.ts` wires routes, logic
+   lives in `service.ts`/`repository.ts`.)
+7. **Meeting the SLO is a layered fix, not more scaling.** A cache (+ a bloom filter for definite-negatives)
+   keeps the common path sub-millisecond; **bounding slow misses** — async lookup, or a per-request timeout
+   that *fails safe* (return `indeterminate`/retry, never a silent `unknown` that could mask a real threat) —
+   keeps a slow store off the p99 tail; and **headroom + predictive pre-scaling + load-shedding** cover the
+   spike-onset gap reactive scaling can't. Scaling handles the **sustained** tail; these handle the **floor**
+   and the **onset**.
 
 ---
 

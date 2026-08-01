@@ -377,6 +377,16 @@ Ran the latency-knob idea empirically on the live 0.1.7 cluster: patched ConfigM
 - **Result (validates REPORT #4 latency-knob note):** autoscaler still scaled **2→5→2** (concurrency is latency-independent); CPU **flipped** from idle (~20–70m/pod) to **~200–286m/pod** (100–143% of the 200m request → a CPU-HPA would now fire — the regime shift); **p90/p95 = 124/170ms** (both **under** the SLO), median 72ms — but **p99 still crossed 200ms**, this time from the **spike-onset transient** (max 5.11s, queuing during the ~40s before pods scaled), **not** the store floor. Onset lag, not SLO reachability, is the binding constraint → stronger case for predictive pre-scaling.
 - **Added to REPORT #4** as a tight empirical footnote under the latency-knob callout (Andre asked to). It **links `logs/EXPERIMENT-latency-sweep.log`**, so that log **must now be committed** (`git add logs/EXPERIMENT-latency-sweep.log`) or the REPORT link 404s on GitHub — it's no longer optional/throwaway. Transcript left closed (post-build experiment, out of scope for the build log).
 
+### 2026-08-02 — REPORT SLO-claim honesty + layered-fix (Andre catch)
+Andre asked whether "sub-ms cache hits → p99<200ms met comfortably" is actually demonstrated. It isn't — every load test is miss-heavy; we never ran a cache-hit-heavy profile. And it's optimistic: p99 catches the top 1%, so with 700ms misses it needs a **>99% hit-ratio** or a bounded miss, else a miss lands in the p99 tail. Fixes:
+- **(a) Softened #4 p99 callout:** "met comfortably" → `p99<200ms` is *reachable* but "**not one I load-tested**"; needs high hit-ratio **or** bounding the miss latency (p99 catches the top 1%). ~0.46ms storm-min cited as the sub-ms-hit hint.
+- **(b) Added "With another week" #7 — "Meeting the SLO is a layered fix, not more scaling":** cache+bloom (common path sub-ms) · **fail-safe** bounded/async misses (return `indeterminate`/retry, never a silent `unknown` — security caveat) off the p99 tail · headroom+pre-scaling+load-shedding for the onset gap. Scaling handles the sustained tail; these handle the floor + onset.
+- **(c) Accuracy fix:** item #6 no longer lists "extract a controller layer" as future work (already done in 0.1.7) — reworded to note the split is done, migrations remain the open item.
+- Confirmed to Andre: we have **never** strictly passed `p(99)<200ms` (L=700 floor, L=50 onset; p90/p95 pass at L=50).
+
+### 2026-08-02 — transcript reopened + brought current (Turns 66–79)
+Andre asked to update the transcript. Removed the premature Turn-65 end-marker and logged Turns **66–79** verbatim (cover-email review, RUN 4, the L=50 latency-sweep experiment, the REPORT empirical-footnote + SLO-honesty/layered-fix pass). Integrity re-verified: 79 turns contiguous, no gaps/dupes, every turn has both sections, exactly one end-marker. `docs/transcript.md` is back in the pending-push set.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).
