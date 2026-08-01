@@ -368,6 +368,9 @@ Andre flagged that the demo never meets `p99 < 200ms` during the spike, and that
 - **Overreach fixed:** supply-chain bullet implied broad digest-pinning. Verified: **only `kindest/node` is `@sha256` digest-pinned**; all others are version-tag-pinned. Reworded to "every image pinned to a specific version (no `:latest`), with the **kind node additionally pinned by immutable digest**."
 - Swept REPORT/README for other "never stale"/digest overreaches — none; remaining "pinned" mentions are accurate.
 
+### 2026-08-01 — REPORT: latency-knob / CPU↔I/O-spectrum note (Andre idea, document-only)
+Andre asked whether a lower store latency (e.g. 50ms) could let p99<200ms hold *while* still scaling — and to disclose the idea. Gave the physics (Little's Law: concurrency = rps×L → scaling triggers at ~10/L rps/pod for any L; steady-state miss p99 ≈ L). **Key framing added to #4:** `L` (already env-tunable `STORE_LOOKUP_LATENCY_MS`) is a knob on the **CPU↔I/O spectrum** — high L → I/O-bound (CPU-HPA blind, p99>SLO); low L → CPU-bound (p99<SLO but CPU-HPA also works). The real takeaway: **concurrency scales correctly across *both* regimes; CPU-HPA only in the CPU-bound half.** Caveats disclosed: a sharp 10× *step* breaches p99 at onset regardless of L (reactive lag → predictive pre-scaling); "meets SLO" is a steady-state claim. Andre chose **document-only** (no load test — keeps the verified 0.1.7 build frozen). REPORT now ~256 lines.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).

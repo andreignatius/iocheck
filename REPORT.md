@@ -120,6 +120,17 @@ is directly comparable.
 > misses its SLO under the workload it's built for. The `p(99)<200ms` gate stays *encoded* in the k6 script
 > precisely so this trade-off is visible, not hidden.
 
+> **Why not just lower `L` until the SLO passes?** `L` (`STORE_LOOKUP_LATENCY_MS`, env-tunable) is really a
+> **knob on the CPU↔I/O spectrum**, and what it *reveals* is the point. Concurrency scales on `rps × L`, so a
+> smaller `L` still triggers scaling — just at proportionally higher RPS (`≈ 10/L` per pod). At small `L` the
+> steady-state miss p99 ≈ `L` *does* fall under 200ms — but reaching the scaling threshold now demands enough
+> RPS that the bottleneck **migrates to CPU**, where a plain CPU-HPA would *also* fire. So the honest takeaway
+> isn't "pick a nicer `L`": it's that **concurrency is the one signal that scales correctly across *both*
+> regimes** (I/O-bound *and* CPU-bound), while CPU-HPA only works in the CPU-bound half. (Caveats: a sharp 10×
+> *step* still breaches p99 at onset regardless of `L` — reactive scaling can't beat spike onset, hence
+> predictive pre-scaling — and "meets the SLO" is a *steady-state* claim. The sweep is a one-line change to
+> reproduce.)
+
 ---
 
 ## What happens when the autoscaler's data source is unavailable

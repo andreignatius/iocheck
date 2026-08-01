@@ -1233,3 +1233,15 @@ Agreed — an important honesty gap. Added a **p99-SLO callout to #4**: the 700m
 ### Claude (summary)
 
 Both valid. **(1)** The "never served stale" claim contradicted the disclosed cache race — reworded the Storage bullet to "refreshes promptly, residual staleness **TTL-bounded** (narrow populate-vs-invalidate race — see *Known limitations*)." **(2)** Verified only `kindest/node` is `@sha256`-pinned; reworded the supply-chain bullet to "every image pinned to a specific version (no `:latest`), with the **kind node additionally pinned by immutable digest**." Swept REPORT/README for other stale/digest overreaches — none. Logged.
+
+---
+
+## Turn 65 — 2026-08-01 10:20 +08
+
+### Andre (verbatim)
+
+> great! i'm thinking... is there a case where we can have p99 < 200ms hold and have the scale up without the 700ms latency? like why not just reduce latency to 50ms and then we observe what happens? maybe we can disclose this idea in the report and then document the findings? we set the 700ms into some kind of variable and adjust? what do you think?
+
+### Claude (summary)
+
+Gave the physics: `L` is already the env var `STORE_LOOKUP_LATENCY_MS`; by Little's Law concurrency = rps×L, so scaling triggers at ~10/L rps/pod for *any* L, and steady-state miss p99 ≈ L (so at 50ms, p99<200ms *does* hold once scaled). But the real finding is that **L is a knob on the CPU↔I/O spectrum**: low L needs high RPS to build concurrency → bottleneck migrates to CPU → a plain CPU-HPA would *also* fire, which weakens challenge #1's contrast. Honest headline: **concurrency scales correctly across both regimes; CPU-HPA only in the CPU-bound half.** Flagged two caveats (sharp step breaches p99 at onset regardless of L → predictive pre-scaling; "meets SLO" = steady-state). Offered document-only vs document+run-a-real-sweep; **Andre chose document-only.** Added a tight "Why not just lower L?" note to REPORT #4; keeps the verified 0.1.7 build frozen.
