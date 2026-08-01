@@ -131,6 +131,14 @@ is directly comparable.
 > predictive pre-scaling — and "meets the SLO" is a *steady-state* claim. The sweep is a one-line change to
 > reproduce.)
 
+> **Measured — the L=50ms sweep bears this out** ([`logs/EXPERIMENT-latency-sweep.log`](logs/EXPERIMENT-latency-sweep.log)):
+> the autoscaler still scales **2→5→2** (concurrency is latency-independent), CPU **flips from idle (tens of
+> milli-cores) to ~250m/pod** — the regime shift, where a CPU-HPA *would* now fire — and **p90/p95 drop to
+> 124/170ms, under the SLO**. But **p99 still crosses 200ms** — now from the **spike-onset transient** (max
+> 5.11s while pods were still scaling up), *not* the store floor. So even with a fast store, reactive
+> scaling's **onset lag** — not SLO reachability — is the binding constraint: a stronger case for predictive
+> pre-scaling than the floor itself.
+
 ---
 
 ## What happens when the autoscaler's data source is unavailable

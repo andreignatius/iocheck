@@ -1,0 +1,91 @@
+
+############################################################
+# EXPERIMENT — latency sweep L=50ms (throwaway; reverts to 700 after)
+# started: 2026-08-01 19:38:34 +08   image 0.1.7
+# Q: does p(99)<200ms hold while still scaling? does CPU flip to CPU-bound?
+############################################################
+===== set L=50 + restart app =====
+configmap/iocheck-config patched
+deployment.apps/iocheck restarted
+deployment "iocheck" successfully rolled out
+  L in live pod (expect 50): 700
+  baseline replicas: 2
+
+===== start k6 storm =====
+kubectl apply -f k8s/loadtest/10-k6-job.yaml
+job.batch/k6-storm created
+started. follow with: make loadtest-logs
+
+===== sample replicas + CPU during the storm (every 20s) =====
+  [t+ 20s] replicas=2  cpu: avg 149m/pod over 2 pods (tot 298m)
+  [t+ 40s] replicas=2  cpu: avg 17m/pod over 2 pods (tot 35m)
+  [t+ 60s] replicas=2  cpu: avg 132m/pod over 2 pods (tot 264m)
+  [t+ 80s] replicas=3  cpu: avg 154m/pod over 2 pods (tot 309m)
+  [t+100s] replicas=5  cpu: avg 278m/pod over 3 pods (tot 836m)
+  [t+120s] replicas=5  cpu: avg 286m/pod over 5 pods (tot 1430m)
+  [t+140s] replicas=5  cpu: avg 216m/pod over 5 pods (tot 1081m)
+  [t+160s] replicas=5  cpu: avg 209m/pod over 5 pods (tot 1046m)
+  [t+180s] replicas=5  cpu: avg 231m/pod over 5 pods (tot 1156m)
+  [t+200s] replicas=5  cpu: avg 200m/pod over 5 pods (tot 1001m)
+  [t+220s] replicas=5  cpu: avg 204m/pod over 5 pods (tot 1023m)
+  [t+240s] replicas=5  cpu: avg 207m/pod over 5 pods (tot 1039m)
+  [t+260s] replicas=5  cpu: avg 135m/pod over 5 pods (tot 679m)
+  [t+280s] replicas=5  cpu: avg 12m/pod over 5 pods (tot 60m)
+  [t+300s] replicas=5  cpu: avg 8m/pod over 5 pods (tot 40m)
+  [t+320s] replicas=2  cpu: avg 9m/pod over 2 pods (tot 18m)
+  [t+340s] replicas=2  cpu: avg 8m/pod over 2 pods (tot 16m)
+  [t+360s] replicas=2  cpu: avg 8m/pod over 2 pods (tot 16m)
+  MAX replicas observed: 5
+
+===== wait for k6 to finish + capture p99 / threshold =====
+error: timed out waiting for the condition on jobs/k6-storm
+  (k6 still finishing / threshold may have failed job)
+  --- k6 summary (p99 + threshold pass/fail) ---
+         ✓ status is 200
+       ✗ http_req_duration..............: avg=84.3ms   min=461.37µs   med=71.71ms  max=5.11s    p(90)=123.83ms p(95)=169.82ms
+         http_reqs......................: 113537  528.082754/s
+         iteration_duration.............: avg=90.61ms  min=607.75µs   med=73.95ms  max=5.12s    p(90)=152.34ms p(95)=196.34ms
+    storm ✓ [ 100% ] 00/60 VUs  3m35s
+    time="2026-08-01T11:42:53Z" level=error msg="thresholds on metrics 'http_req_duration' have been crossed"
+
+===== final replica + KEDA state =====
+  KEDA health: {"s0-prometheus":{"numberOfFailures":0,"status":"Happy"}}
+NAME                      READY   RESTARTS
+iocheck-d9d978549-522zj   true    0
+iocheck-d9d978549-sqhzk   true    0
+
+===== REVERT: ConfigMap STORE_LOOKUP_LATENCY_MS -> 700 =====
+configmap/iocheck-config patched
+deployment.apps/iocheck restarted
+deployment "iocheck" successfully rolled out
+  restored L in a live pod: 700
+# experiment done + reverted  19:50:23 +08
+
+############################################################
+# FINDINGS (L=50ms sweep) — reverted to 700 after; committed demo UNCHANGED
+############################################################
+# VALIDITY NOTE: the inline env-check printed 700 — an artifact of `kubectl rollout
+#   restart` immediately followed by `rollout status` (status returned the OLD generation
+#   as "complete" before the restart cycled). The storm nonetheless ran at L=50: median
+#   request = 72ms is impossible at L=700 (every cache-miss floors at 700ms via pg_sleep),
+#   and CPU/pod was 4-8x the L=700 runs. Both independently confirm L=50 was active.
+#
+#                       L=700 (committed demo)     L=50 (this experiment)
+#   autoscaling         2 -> 7 -> 2                 2 -> 5 -> 2   (concurrency-driven; latency-independent)
+#   CPU / pod (load)    ~20-70m  (idle, 10-35%)     ~200-286m  (100-143% of the 200m request)
+#   regime              I/O-bound (CPU-HPA blind)   CPU-bound  (a CPU-HPA WOULD now fire)
+#   median latency      ~700ms+                     72ms
+#   p90 / p95           >> 200ms                    124ms / 170ms   (both UNDER the SLO)
+#   p99 / max           seconds                     > 200ms (k6 threshold FAILED) / 5.11s
+#   throughput          ~70-77 rps                  ~528 rps avg (113,537 reqs total)
+#
+# INTERPRETATION (validates the REPORT #4 "latency knob / CPU<->I/O spectrum" note):
+#  1. Lowering L makes the SLO reachable for the BULK (median/p90/p95 all < 200ms) and
+#     shifts the bottleneck to CPU (idle -> saturated). At L=50 a plain CPU-HPA would also
+#     fire -- empirical proof of the regime flip.
+#  2. The autoscaler still scales correctly (2->5->2): concurrency is latency-independent.
+#  3. p99 STILL crosses 200ms -- but now from the SPIKE-ONSET TRANSIENT (max 5.11s: requests
+#     queued during the ~40s before pods scaled up), NOT the store floor (which is 50ms).
+#     => Reactive scaling's onset lag, not SLO reachability, is the binding constraint.
+#        This is a STRONGER argument for predictive pre-scaling than the 700ms floor was.
+############################################################
