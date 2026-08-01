@@ -27,8 +27,9 @@ client ─POST /lookup─▶ Service (ClusterIP) ─▶ iocheck pods (Express/TS
   read-only-rootfs** container.
 - **Storage:** **Postgres** is the source of truth (`PRIMARY KEY (type, value)`, upsert via `ON CONFLICT`)
   and a **hard dependency**. **Redis** is a **read-through cache with negative-caching**, a **TTL**, and
-  **invalidation on `/ioc` upsert** (so a re-classified IOC is never served stale) — and a **soft
-  dependency**: if it fails the service **fails open** to Postgres (below).
+  **invalidation on `/ioc` upsert** — so a re-classified IOC refreshes promptly, with any residual staleness
+  **bounded by the TTL** (a narrow populate-vs-invalidate race remains — see *Known limitations*). Redis is a
+  **soft dependency**: if it fails the service **fails open** to Postgres (below).
 - **Platform:** multi-node **kind** cluster with **Calico** (so NetworkPolicy actually enforces — kindnet
   doesn't). metrics-server + a minimal **Prometheus/Grafana** (provisioned as code) + **KEDA**. The
   Deployment wires all **three probes** (startup for slow first-load, liveness on `/healthz`, readiness on
@@ -107,6 +108,18 @@ load-balancing). It ramps a baseline → 10×-ish spike → hold → ramp-down, 
 threshold. The same script drives both the CPU-HPA baseline (#1) and the KEDA run (#3), so the before/after
 is directly comparable.
 
+> **On the p99 SLO — read this before concluding the demo "fails" it.** With `STORE_LOOKUP_LATENCY_MS=700`
+> the storm **cannot** hit `p99 < 200ms`, and that is **by construction, not a failure**. The 700ms modeled
+> store latency is a **hard floor on every cache _miss_** — no amount of horizontal scaling beats it. Scaling
+> drains *queuing*, so p99 falls 5s → ~2s → toward ~700ms as pods are added, but never below the floor. That
+> floor exists solely to force the **I/O-bound regime** that makes a CPU-HPA fail and an autoscaler necessary
+> (see #1). The **stated workload is read-heavy and _cache-friendly_**: there, the vast majority of requests
+> are **sub-millisecond cache hits** and `p99 < 200ms` is met comfortably — the SLO pressure is cache
+> **hit-ratio** and tail misses, which the read-through + negative cache absorb. So the demo **deliberately
+> trades SLO compliance to isolate and prove the autoscaling behaviour**; it is *not* a claim that the design
+> misses its SLO under the workload it's built for. The `p(99)<200ms` gate stays *encoded* in the k6 script
+> precisely so this trade-off is visible, not hidden.
+
 ---
 
 ## What happens when the autoscaler's data source is unavailable
@@ -154,10 +167,10 @@ investigation patterns, and **availability** under storm + abuse.
   iocheck pods** (proven: a non-iocheck pod is BLOCKED — [`logs/M3-k8s.log`](logs/M3-k8s.log)).
 - **Hardening:** namespace **Pod Security Admission = restricted**; non-root, read-only rootfs, dropped
   caps, seccomp; **no IOC values in metrics or logs**; input **canonicalised** (anti-evasion) + size-capped.
-- **Supply chain:** distroless runtime on a **current, non-EOL** Node (22; 20 is past end-of-life), every
-  image **pinned** (kind node by digest); dev/test deps are pruned from the runtime image, so the shipped
-  container reports **0 known vulnerabilities** (`npm audit --omit=dev`). Datastores on current majors
-  (Postgres 17, Redis 8).
+- **Supply chain:** distroless runtime on a **current, non-EOL** Node (22; 20 is past end-of-life); every
+  image **pinned to a specific version** (no `:latest`), with the **kind node additionally pinned by immutable
+  digest**. Dev/test deps are pruned from the runtime image, so the shipped container reports **0 known
+  vulnerabilities** (`npm audit --omit=dev`). Datastores on current majors (Postgres 17, Redis 8).
 - **Metrics isolation:** `/metrics` is served on a **separate internal port (9464)**, not the public API
   port, and a **NetworkPolicy** exposes it to the **monitoring namespace only**. Even with no IOC values in
   labels, the *aggregate* metadata (verdict rates, request tempo) reveals **SOC activity/tempo**, so it must
@@ -165,6 +178,41 @@ investigation patterns, and **availability** under storm + abuse.
   `:3000/metrics`→**404**, `:9464/metrics` **blocked** from a non-monitoring pod (times out) while Prometheus
   scrapes it `up`. (NetworkPolicy is L3/L4 and can't gate an HTTP path — port separation is what makes the
   policy expressible.)
+
+---
+
+## Known limitations (current state)
+
+Honest catalog of what is **not** production-ready today — distinct from the prioritised roadmap below.
+
+**Correctness**
+- **Cache-invalidation race:** the read-through *populate* can race with *invalidate-on-upsert*. A reader that
+  fetched the old row just before a write can `cacheSet` it *after* the upsert's `cacheDel`, leaving a **stale
+  entry until the TTL expires**. The TTL bounds staleness; a **write-through** (set-on-upsert) or
+  **single-flight + versioned keys** closes the window.
+- **Cache stampede:** a hot-key expiry / cold miss lets many requests miss concurrently and hit Postgres
+  together (no request coalescing / single-flight).
+
+**Security**
+- **`/lookup` is unauthenticated** — anyone who can reach the Service queries the intel; today only the
+  (in-cluster-only) NetworkPolicy limits that. Analyst identity (mTLS/OIDC) + per-user audit is the prod answer.
+- **No rate limiting** — a compromised or runaway credential can hammer `/lookup` or `/ioc`.
+- **Observability is demo-grade:** Prometheus scrapes **cluster-wide** (broad RBAC) with **no auth**; Grafana
+  ships with **default/anonymous** access. Both need auth, scoped RBAC, and network isolation in prod.
+- **No TLS in transit** — client↔app and app↔Postgres/Redis are plaintext; confidential intel should be
+  encrypted end-to-end (mTLS / a service mesh).
+- **Single shared `/ioc` API key** — no rotation, scopes, or per-identity attribution beyond the key
+  fingerprint; **Redis password** is passed via container args (visible in the pod spec — an ACL file is better).
+
+**Availability**
+- **Postgres is a single-replica SPOF** (the hard dependency) with **no HA/failover and no backups** — a node
+  or pod loss takes the whole service down. Prod: replicated PG (CloudNativePG / managed) + PITR backups.
+- **Prometheus is a single instance** — it *is* the autoscaling signal source; KEDA `fallback` covers an
+  outage, but the signal itself isn't HA.
+
+**Ops**
+- **Audit log is stdout-only** — not yet shipped to a tamper-evident, access-controlled sink.
+- **No alerting** — dashboards exist, but there are no Prometheus alert rules / SLO burn-rate alerts.
 
 ---
 

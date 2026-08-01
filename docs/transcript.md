@@ -1199,3 +1199,37 @@ README/REPORT consistency sweep vs the current 0.1.7 state. **Fixed:** README pr
 ### Claude (summary)
 
 Sanity-checked both. **Transcript:** Turns 1–60 sequential, no gaps/dupes, timestamps chronological; the `0.1.0`–`0.1.7` mentions are historical progression narration (not stale). Gap found: transcript stopped at Turn 60 — the README-sweep turn wasn't logged, so added Turns 61–62 here. **Journal:** entries chronological through 2026-08-01; image progression 0.1.5(audit)→0.1.6(infra)→0.1.7(controllers) consistent; README-sweep entry present. Both now current and mutually consistent.
+
+---
+
+## Turn 63 — 2026-08-01 09:50 +08
+
+### Andre (verbatim)
+
+> I had a concern... i think our demo never meets the required p99 < 200ms during spikes... it scales, but scaling alone is not the acceptance criterion. so like the required latency SLO fails
+>
+> thats cos we added in the 700ms latency and the 700ms modeled store latency is a floor no amount of scaling beats. it exists to stress the autoscaler. normal cache-friendly traffic (the stated workload) would meet the SLO easily via sub-ms cache hits
+>
+> can we add this in the REPORT?
+>
+> then can we also disclose all our current weaknesses in the "area for improvement section"? for e.g. 1. cache-invalidation race 2. security gaps (prometheus is cluster-wide, grafana is demo-only creds, lookup/ unauthenticated, no rate-limiting etc) — can you think of any other gaps?
+
+### Claude (summary)
+
+Agreed — an important honesty gap. Added a **p99-SLO callout to #4**: the 700ms modeled latency is a hard floor on every cache miss, so `p99<200ms` is unreachable *by construction* (scaling drains queuing 5s→~2s→~700ms but can't beat the floor); it exists only to force the I/O-bound regime that breaks CPU-HPA. The **stated cache-friendly workload** meets the SLO via sub-ms cache hits — the demo deliberately trades SLO compliance to isolate/prove autoscaling, and the gate stays encoded so the trade-off is visible. Added a new **"Known limitations (current state)"** section (Correctness/Security/Availability/Ops) covering Andre's items **plus** more I surfaced: cache stampede, no TLS in transit, single shared `/ioc` key + Redis-pw-in-args, **Postgres single-replica SPOF / no-HA / no-backups**, Prometheus single-instance (the scaling signal itself), audit-log stdout-only, no alerting. Journal + transcript updated.
+
+---
+
+## Turn 64 — 2026-08-01 10:02 +08
+
+### Andre (verbatim)
+
+> no worries re the length i think i'll disclose this in the email to the reviewer...
+>
+> re [Storage bullet: Redis invalidation "so a re-classified IOC is never served stale"] in the report i think contradicts below [Known-limitations: cache-invalidation race leaves a stale entry until TTL]
+>
+> re [Supply-chain bullet: "every image pinned (kind node by digest)"] i think only the kind node is digest-pinned, can we tidy this up?
+
+### Claude (summary)
+
+Both valid. **(1)** The "never served stale" claim contradicted the disclosed cache race — reworded the Storage bullet to "refreshes promptly, residual staleness **TTL-bounded** (narrow populate-vs-invalidate race — see *Known limitations*)." **(2)** Verified only `kindest/node` is `@sha256`-pinned; reworded the supply-chain bullet to "every image pinned to a specific version (no `:latest`), with the **kind node additionally pinned by immutable digest**." Swept REPORT/README for other stale/digest overreaches — none. Logged.

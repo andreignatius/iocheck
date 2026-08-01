@@ -357,6 +357,17 @@ Andre asked whether to do both migrations + controllers now. Gave the honest ris
 ### 2026-08-01 — README/REPORT consistency sweep vs 0.1.7 state (Andre)
 Post-infra-bump sweep. **Fixed:** README prereq "Node ≥ 18" → "Node ≥ 20 (container runs Node 22)" — matches `engines >=20` + the Node-22 runtime. **Confirmed clean:** REPORT's only Node refs are the supply-chain bullet (22; 20 EOL) + the `maxRequestsPerSocket` API mention (no stale postgres:16/redis:7/node20); **no hardcoded image tags** (`0.1.x`) in either doc (tags live only in Makefile/manifests); Helm note consistent (line 124 = original brief). No contradictions README↔REPORT.
 
+### 2026-08-01 — REPORT honesty: p99-SLO clarification + Known-limitations disclosure (Andre)
+Andre flagged that the demo never meets `p99 < 200ms` during the spike, and that this must be stated honestly.
+- **p99-SLO callout added to #4:** the 700ms modeled store latency is a **hard floor on every cache miss** — scaling drains *queuing* (5s→~2s→~700ms) but can't beat the floor, so `p99<200ms` is **unreachable by construction, not a failure**. The floor exists only to force the I/O-bound regime that makes CPU-HPA fail. Under the **stated cache-friendly workload**, requests are sub-ms cache hits and the SLO is met comfortably. The demo **deliberately trades SLO compliance to isolate/prove autoscaling**; the `p(99)<200ms` gate stays encoded so the trade-off is visible, not hidden.
+- **New "Known limitations (current state)" section** — honest catalog grouped Correctness / Security / Availability / Ops. Andre's items (cache-invalidation race, Prometheus cluster-wide + no auth, Grafana demo creds, `/lookup` unauth, no rate-limiting) **plus** gaps I added: cache stampede, no TLS in transit, single shared `/ioc` key + Redis-password-in-args, **Postgres single-replica SPOF/no-HA/no-backups**, Prometheus single-instance (the scaling signal), audit-log stdout-only, no alerting.
+- REPORT now 244 lines (longer, but self-critique is exactly what the "defend every line" call rewards). No contradictory p99 claims remain.
+
+### 2026-08-01 — REPORT accuracy fixes (Andre): stale-claim contradiction + digest-pinning overreach
+- **Contradiction fixed:** Storage bullet said Redis invalidation means "a re-classified IOC is **never** served stale" — contradicts the disclosed cache-invalidation race. Reworded to "refreshes promptly, residual staleness **TTL-bounded** (narrow populate-vs-invalidate race — see *Known limitations*)."
+- **Overreach fixed:** supply-chain bullet implied broad digest-pinning. Verified: **only `kindest/node` is `@sha256` digest-pinned**; all others are version-tag-pinned. Reworded to "every image pinned to a specific version (no `:latest`), with the **kind node additionally pinned by immutable digest**."
+- Swept REPORT/README for other "never stale"/digest overreaches — none; remaining "pinned" mentions are accurate.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).
