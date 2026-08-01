@@ -348,6 +348,15 @@ Andre reviewed several things while waiting. Triaged; did the low-risk/high-valu
 - **Deferred (documented as future-work, not done):** `node-pg-migrate` as a k8s Job replacing `init.sh` (over-engineering for one static table at submission; `init.sh` is the standard PG-container init, its real limit is "first-boot only / no versioning"); a controller layer (already have routes→service→repository; marginal for 3 routes).
 - Build + 15 unit tests pass. **Cluster re-verify: RUN 3 = ALL GREEN** — clean `make all`, 0 restarts, settled instantly. Live version proof: app Node **v22.22.0**, **PostgreSQL 17.10**, **Redis 8.10.0**, redis `maxmemory=100mb`+`allkeys-lru`, PG mem `req=lim=512Mi`, Redis mem `req=lim=128Mi`; V1 smoke + V2 split + V3 audit + V4 netpol all pass ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 3).
 
+### 2026-07-31 17:05 — controllers refactor done (image 0.1.7); migrations = document-only (Andre)
+Andre asked whether to do both migrations + controllers now. Gave the honest risk split; he chose accordingly.
+- **Controllers [done]:** extracted the 4 route handlers from `createApp()` into [`src/controllers.ts`](../src/controllers.ts) (`postLookup`/`postIoc`/`getHealthz`/`getReadyz`); `app.ts` is now pure wiring (`app.post('/lookup', postLookup)` …) + middleware + error handler + `createMetricsApp`. Behavior-identical (logic already lived in service/repository). Typecheck clean, 15 tests pass. **Verified live on 0.1.7** (rolling deploy, 0 restarts): full smoke passes and the **`/ioc` audit still fires from the moved `postIoc`** (confirmed `ioc_upsert` for `198.51.100.7` across both pods) — [`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log).
+- **Migrations [document-only, Andre's call]:** kept `init.sh`; REPORT "with another week" §6 already frames `node-pg-migrate` as a k8s Job as the production path. Rationale for NOT doing it now: it restructures the fragile DB-bootstrap (Job/initContainer + superuser-secret exposure + run-on-every-deploy), and packaging the tool into the runtime image would bloat it and undercut the just-earned **0-vuln shipped image** — high risk for a schema-versioning feature a single static table never exercises.
+- Versions synced to 0.1.7 (Makefile, deployment, package.json + lockfile).
+
+### 2026-08-01 — README/REPORT consistency sweep vs 0.1.7 state (Andre)
+Post-infra-bump sweep. **Fixed:** README prereq "Node ≥ 18" → "Node ≥ 20 (container runs Node 22)" — matches `engines >=20` + the Node-22 runtime. **Confirmed clean:** REPORT's only Node refs are the supply-chain bullet (22; 20 EOL) + the `maxRequestsPerSocket` API mention (no stale postgres:16/redis:7/node20); **no hardcoded image tags** (`0.1.x`) in either doc (tags live only in Makefile/manifests); Helm note consistent (line 124 = original brief). No contradictions README↔REPORT.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).

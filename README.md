@@ -7,7 +7,7 @@ in [docs/transcript.md](docs/transcript.md); evidence (logs + screenshots) in [l
 [docs/evidence/](docs/evidence/). The original brief is preserved at the bottom of this file.
 
 ## Prerequisites
-Docker · `kind` · `kubectl` (v1.32.x, matching the pinned node image) · Node ≥ 18 (for local unit tests only).
+Docker · `kind` · `kubectl` (v1.32.x, matching the pinned node image) · Node ≥ 20 (for local unit tests only; the container runs Node 22).
 (No Helm — Calico, KEDA, and metrics-server are **vendored as pinned raw manifests** for reproducibility; Prometheus/Grafana are our own manifests.)
 
 ## Reproduce from a clean state

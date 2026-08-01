@@ -1123,3 +1123,69 @@ redis-c84c99bfb-8w8dq     true    0
 /tmp/e2e_run3.sh: line 67: 52791 Terminated: 15          kubectl -n iocheck port-forward svc/iocheck 13000:3000 > /tmp/pf1 2>&1
 /tmp/e2e_run3.sh: line 67: 52792 Terminated: 15          kubectl -n iocheck port-forward "pod/$APP" 19464:9464 > /tmp/pf2 2>&1
 /tmp/e2e_run3.sh: line 67: 52793 Terminated: 15          kubectl -n monitoring port-forward svc/prometheus 19090:9090 > /tmp/pf3 2>&1
+
+############################################################
+# CONTROLLERS REFACTOR verify (image 0.1.7, rolling deploy on live cluster)
+# 2026-07-31 17:04:25 +08
+############################################################
+===== make deploy (rebuild 0.1.7 + rolling update) =====
+Waiting for deployment "iocheck" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "iocheck" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "iocheck" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "iocheck" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "iocheck" rollout to finish: 1 old replicas are pending termination...
+deployment "iocheck" successfully rolled out
+  running image: iocheck:0.1.7
+
+===== smoke (all routes via extracted controllers) =====
+
+== healthz (liveness, process-only) ==
+{"status":"ok"}
+
+== readyz (PG hard-dep; cache reported) ==
+{"status":"ready","db":true,"cache":true}
+
+== lookup seeded malicious IP -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"203.0.113.7","source":"seed-abuseipdb","score":90}}
+
+== lookup unknown IP -> unknown (negative-cached) ==
+{"verdict":"unknown"}
+
+== upsert domain (authed) — note mixed case in ==
+{"type":"domain","value":"evil.com","source":"smoke","score":80}
+
+== lookup the upserted domain by lowercase -> malicious (normalization works) ==
+{"verdict":"malicious","ioc":{"type":"domain","value":"evil.com","source":"smoke","score":80}}
+
+== IPv6 equivalence: upsert ::1 then look up its long form -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"::1","source":"smoke","score":50}}
+
+== upsert WITHOUT key -> 401 ==
+HTTP 401
+
+== invalid sha256 -> 400 ==
+HTTP 400
+
+== metrics (separate port http://localhost:19464; note NO ioc value labels) ==
+http_requests_total{route="/healthz",method="GET",status="200"} 3
+http_requests_total{route="/readyz",method="GET",status="200"} 6
+iocheck_cache_up 1
+
+== public port must NOT serve /metrics (should be 404) ==
+  GET :3000/metrics -> 404 (expect 404)
+
+smoke complete.
+
+===== audit still fires from postIoc controller? =====
+  /ioc valid -> 201
+
+===== restart counts (expect 0) =====
+NAME                      READY   RESTARTS
+iocheck-775b966c5-5nsff   true    0
+iocheck-775b966c5-t4gxh   true    0
+postgres-0                true    0
+redis-c84c99bfb-8w8dq     true    0
+
+# controllers verify done 17:05:46 +08
+/tmp/verify_controllers.sh: line 29: 54440 Terminated: 15          kubectl -n iocheck port-forward svc/iocheck 13000:3000 > /tmp/pf1 2>&1
+/tmp/verify_controllers.sh: line 29: 54441 Terminated: 15          kubectl -n iocheck port-forward "pod/$APP" 19464:9464 > /tmp/pf2 2>&1

@@ -1163,3 +1163,39 @@ Confirmed the allocation (6 CPU / 12 GB — exactly recommended) and clean state
 ### Claude (summary)
 
 Triaged all five honestly: **agreed + did now** — Node 20→22 (real: EOL ~Apr 2026), PG/Redis mem `request==limit` (incompressible RAM), PG 16→17 + Redis 7→8. **Pushed back / deferred** — `init.sh`→migration lib (recommended `node-pg-migrate` as a k8s Job, but argued it's over-engineering for one static table at submission; `init.sh` isn't hacky, it's the standard PG-container init — its real limit is first-boot-only/no-versioning) and the controller layer (already have routes→service→repository; marginal for 3 routes). Added the safety detail Andre's point needed: Redis `request==limit` also needs `--maxmemory`+`allkeys-lru` or it just OOMs instead of evicting. Applied all infra edits (→image 0.1.6, lockfile regenerated). Verified locally: builds on Node 22, `/nodejs/bin/node`→v22.22.0, and **`npm audit --omit=dev`→0 vulns** (shipped distroless image is clean; the 5 findings are pruned devDeps). Clean **RUN 3 = ALL GREEN** with the bumps confirmed live: app Node **v22.22.0**, **PostgreSQL 17.10**, **Redis 8.10.0** (`maxmemory 100mb`+`allkeys-lru`), PG/Redis mem `req==lim` (512Mi/128Mi), 0 restarts, V1–V4 all pass. REPORT updated (supply-chain bullet + resource-policy note + migrations/controllers into "with another week").
+
+---
+
+## Turn 60 — 2026-07-31 17:05 +08
+
+### Andre (verbatim)
+
+> re migrations and controllers... possible to run both now? or is the risk high? i think it should be q straightfwd right?
+
+### Claude (summary)
+
+Separated the two by risk. **Controllers = low-risk, did it now:** extracted the 4 handlers into `src/controllers.ts`, leaving `app.ts` as pure wiring; behavior-identical, typecheck + 15 tests pass, verified live on image **0.1.7** (rolling deploy, 0 restarts, full smoke, and the `/ioc` audit confirmed still firing from the moved `postIoc` across both pods). **Migrations = higher-risk than it looks:** it restructures the fragile DB-bootstrap (Job/initContainer + superuser-secret exposure + run-on-every-deploy) and packaging `node-pg-migrate` into the runtime image would bloat it and undercut the just-earned **0-vuln** shipped image — for schema-versioning a single static table never exercises. Offered lightweight-SQL-split / document-only / full-tool; **Andre chose document-only** (REPORT §6 already frames node-pg-migrate-as-a-Job as the production path; `init.sh` stays).
+
+---
+
+## Turn 61 — 2026-08-01 09:30 +08
+
+### Andre (verbatim)
+
+> can we update READ for one more sweep?
+
+### Claude (summary)
+
+README/REPORT consistency sweep vs the current 0.1.7 state. **Fixed:** README prereq "Node ≥ 18" → "Node ≥ 20 (container runs Node 22)" — the only drift from the version bumps. **Confirmed clean:** REPORT's only Node refs are the supply-chain bullet (22; 20 EOL) + the `maxRequestsPerSocket` API mention (no stale postgres:16/redis:7/node20); **no hardcoded image tags** (`0.1.x`) in either doc (tags live only in Makefile/manifests); Helm note consistent (README line 124 = original brief, line 11 = our "No Helm"); repo layout is high-level so `controllers.ts` needs no callout. No README↔REPORT contradictions. Logged in journal (2026-08-01).
+
+---
+
+## Turn 62 — 2026-08-01 09:36 +08
+
+### Andre (verbatim)
+
+> can we sanity check for the journal and transcript as well
+
+### Claude (summary)
+
+Sanity-checked both. **Transcript:** Turns 1–60 sequential, no gaps/dupes, timestamps chronological; the `0.1.0`–`0.1.7` mentions are historical progression narration (not stale). Gap found: transcript stopped at Turn 60 — the README-sweep turn wasn't logged, so added Turns 61–62 here. **Journal:** entries chronological through 2026-08-01; image progression 0.1.5(audit)→0.1.6(infra)→0.1.7(controllers) consistent; README-sweep entry present. Both now current and mutually consistent.

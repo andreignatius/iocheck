@@ -2,9 +2,8 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import pinoHttp from 'pino-http';
 import { ZodError } from 'zod';
 import { requireAdminKey } from './auth';
-import { pingDb } from './db';
-import { pingCache } from './cache';
 import { config } from './config';
+import { getHealthz, getReadyz, postIoc, postLookup } from './controllers';
 import { logger } from './logger';
 import {
   httpInFlight,
@@ -12,9 +11,6 @@ import {
   httpRequestsTotal,
   registry,
 } from './metrics';
-import { lookup, upsert } from './service';
-import { isAcceptingTraffic } from './state';
-import { LookupSchema, UpsertSchema } from './validation';
 
 export function createApp() {
   const app = express();
@@ -51,70 +47,11 @@ export function createApp() {
     next();
   });
 
-  // --- POST /lookup (read tier) ---
-  app.post('/lookup', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const input = LookupSchema.parse(req.body);
-      res.status(200).json(await lookup(input));
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // --- POST /ioc (privileged write — authenticated, §S1) ---
-  app.post('/ioc', requireAdminKey, async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const input = UpsertSchema.parse(req.body);
-      const rec = await upsert(input);
-      // AUDIT (§S7): the /ioc write is the crown jewels — un-flagging a real threat is an
-      // evasion, flagging a legit indicator is a SOC DoS. Record who (key fingerprint, never
-      // the key), from where, and exactly what changed. NB: this DELIBERATELY logs the IOC
-      // value — the "no IOC values in logs" rule targets the high-volume *lookup* path
-      // (analyst investigation patterns); a privileged *mutation* audit trail is useless
-      // without the object it mutated, and accountability for tampering outweighs the
-      // confidentiality of the block-set here. Low volume (admin writes), never the read path.
-      logger.info(
-        {
-          event: 'ioc_upsert',
-          actor: res.locals.actor,
-          src_ip: req.ip,
-          type: rec.type,
-          value: rec.value,
-          source: rec.source,
-          score: rec.score,
-        },
-        'audit: ioc upsert',
-      );
-      res.status(201).json({
-        type: rec.type,
-        value: rec.value,
-        source: rec.source,
-        score: rec.score,
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // --- liveness: process-only, NEVER checks deps (§O3) ---
-  app.get('/healthz', (_req: Request, res: Response) => {
-    res.status(200).json({ status: 'ok' });
-  });
-
-  // --- readiness: Postgres is a HARD dep; Redis is soft (reported, not gating) (§O3) ---
-  app.get('/readyz', async (_req: Request, res: Response) => {
-    if (!isAcceptingTraffic()) {
-      res.status(503).json({ status: 'draining' });
-      return;
-    }
-    const dbOk = await pingDb();
-    const cacheOk = await pingCache(); // reported only — does NOT gate readiness
-    if (!dbOk) {
-      res.status(503).json({ status: 'not-ready', db: false, cache: cacheOk });
-      return;
-    }
-    res.status(200).json({ status: 'ready', db: true, cache: cacheOk });
-  });
+  // --- routes: thin handlers live in controllers.ts (logic in service/repository) ---
+  app.post('/lookup', postLookup);                    // read tier
+  app.post('/ioc', requireAdminKey, postIoc);         // privileged write — auth first (§S1)
+  app.get('/healthz', getHealthz);                    // liveness (process-only, §O3)
+  app.get('/readyz', getReadyz);                      // readiness (PG hard / Redis soft, §O3)
 
   // NOTE: /metrics is deliberately NOT served on this (public) app. It lives on a
   // separate internal listener (createMetricsApp, bound to METRICS_PORT) so a
