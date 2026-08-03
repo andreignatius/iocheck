@@ -397,6 +397,9 @@ Built the second k6 scenario from the reviewed spec ([`docs/slo-scenario-spec.md
 - **Spike tail root-caused (Andre asked why max=1.38s):** Prometheus showed it's **Node event-loop stalls**, not saturation/throttling/scaling-lag — event-loop lag peaked **840ms/1316ms per pod** (explains the 1.38s max) while in-flight stayed 6/pod (<10) and CPU 242m (<500m limit, ~7% CFS throttle). At ~300/s per pod the single-threaded loop stalls in bursts (sync parse/validate/serialize + GC), so even sub-ms cache hits queue behind the stall. **No reactive signal catches it** (concurrency AND CPU sub-threshold) → the fix is the predictive/headroom + bounded-miss side of #7. Recorded in the log's TAIL ROOT-CAUSE block; REPORT #4 spike line tightened to acknowledge the tail.
 - **Uncommitted — Andre to review + commit if clean** (run was clean).
 
+### 2026-08-03 12:15 — RUN 5 clean e2e (+ SLO tooling reproducibility): core all green
+`make cluster-down && make all` at 0.1.7 → **exit 0**, 0 restarts, versions confirmed (node v22.22.0, PG 17.10); V1 smoke + V2 metrics-split + V3 audit + V4 netpol all pass ([`logs/E2E-clean-run.log`](../logs/E2E-clean-run.log) RUN 5). **V5** added a `make loadtest-slo` headline (0.995 steady) to prove the new SLO tooling reproduces from clean — the job ran and the cache worked (median 1.71ms) but **p99=308ms FAILED** because it ran *immediately after* the heavy `make all`+V1–V4 on the 6-CPU VM → **host-contention event-loop lag** (same mechanism as the spike tail), not a defect. **Re-confirmed on the now-idle cluster: p99=8.9ms PASS** (matches the dedicated sweep's 11.5ms). **Lesson:** the SLO p99 is host-contention-sensitive — run `loadtest-slo` on a settled/idle cluster, not chained after a build. Core e2e reproduces cleanly.
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).

@@ -1529,3 +1529,135 @@ redis-c84c99bfb-n747d     true    0
 /tmp/e2e_run4.sh: line 65: 59886 Terminated: 15          kubectl -n iocheck port-forward svc/iocheck 13000:3000 > /tmp/pf1 2>&1
 /tmp/e2e_run4.sh: line 65: 59887 Terminated: 15          kubectl -n iocheck port-forward "pod/$APP" 19464:9464 > /tmp/pf2 2>&1
 /tmp/e2e_run4.sh: line 65: 59888 Terminated: 15          kubectl -n monitoring port-forward svc/prometheus 19090:9090 > /tmp/pf3 2>&1
+
+############################################################
+# RUN 5 — clean from-scratch e2e at 0.1.7 (+ SLO tooling reproducibility)
+# started: 2026-08-03 12:03:32 +08
+############################################################
+===== make all (from clean) =====
+  make all: exit 0
+===== settle (120s + gate) =====
+  [gate 1] restarts:[0 0 0 0 ]
+  [gate 2] restarts:[0 0 0 0 ]
+  settled.
+
+===== versions + pod state =====
+  image: iocheck:0.1.7
+  node:  v22.22.0
+  pg:    postgres (PostgreSQL) 17.10
+NAME                      READY   STATUS    RESTARTS   AGE     IP                NODE              NOMINATED NODE   READINESS GATES
+iocheck-775b966c5-5kl66   1/1     Running   0          2m57s   192.168.237.197   iocheck-worker    <none>           <none>
+iocheck-775b966c5-qzzg6   1/1     Running   0          2m57s   192.168.23.68     iocheck-worker2   <none>           <none>
+postgres-0                1/1     Running   0          2m57s   192.168.23.70     iocheck-worker2   <none>           <none>
+redis-c84c99bfb-nq6pd     1/1     Running   0          2m57s   192.168.237.196   iocheck-worker    <none>           <none>
+
+===== V1: smoke =====
+
+== healthz (liveness, process-only) ==
+{"status":"ok"}
+
+== readyz (PG hard-dep; cache reported) ==
+{"status":"ready","db":true,"cache":true}
+
+== lookup seeded malicious IP -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"203.0.113.7","source":"seed-abuseipdb","score":90}}
+
+== lookup unknown IP -> unknown (negative-cached) ==
+{"verdict":"unknown"}
+
+== upsert domain (authed) — note mixed case in ==
+{"type":"domain","value":"evil.com","source":"smoke","score":80}
+
+== lookup the upserted domain by lowercase -> malicious (normalization works) ==
+{"verdict":"malicious","ioc":{"type":"domain","value":"evil.com","source":"smoke","score":80}}
+
+== IPv6 equivalence: upsert ::1 then look up its long form -> malicious ==
+{"verdict":"malicious","ioc":{"type":"ip","value":"::1","source":"smoke","score":50}}
+
+== upsert WITHOUT key -> 401 ==
+HTTP 401
+
+== invalid sha256 -> 400 ==
+HTTP 400
+
+== metrics (separate port http://localhost:19464; note NO ioc value labels) ==
+http_requests_total{route="/healthz",method="GET",status="200"} 19
+http_requests_total{route="/readyz",method="GET",status="503"} 3
+http_requests_total{route="/readyz",method="GET",status="200"} 31
+http_requests_total{route="/lookup",method="POST",status="200"} 4
+http_requests_total{route="/ioc",method="POST",status="201"} 2
+http_requests_total{route="/ioc",method="POST",status="401"} 1
+http_requests_total{route="/lookup",method="POST",status="400"} 1
+iocheck_lookup_results_total{type="ip",verdict="malicious"} 2
+
+== public port must NOT serve /metrics (should be 404) ==
+  GET :3000/metrics -> 404 (expect 404)
+
+smoke complete.
+
+===== V2: metrics split =====
+  :3000/metrics=404  :9464/metrics=200
+  KEDA: {"s0-prometheus":{"numberOfFailures":0,"status":"Happy"}}
+
+===== V3: audit =====
+  201? 201   401? 401
+
+===== V4: NetworkPolicy =====
+ 000(exit28)
+
+===== V5: SLO tooling reproduces (make loadtest-slo, headline 0.995 steady) =====
+started SLO run (hit=0.995 mode=steady rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+/tmp/e2e_run5.sh: line 51: 73073 Terminated: 15          kubectl -n iocheck port-forward svc/iocheck 13000:3000 > /tmp/pf1 2>&1
+/tmp/e2e_run5.sh: line 51: 73074 Terminated: 15          kubectl -n iocheck port-forward "pod/$APP" 19464:9464 > /tmp/pf2 2>&1
+/tmp/e2e_run5.sh: line 51: 73075 Terminated: 15          kubectl -n monitoring port-forward svc/prometheus 19090:9090 > /tmp/pf3 2>&1
+  [t+ 15s] replicas=2 job(succ=0 fail=0)
+  [t+ 30s] replicas=2 job(succ=0 fail=0)
+  [t+ 45s] replicas=2 job(succ=0 fail=0)
+  [t+ 60s] replicas=2 job(succ=0 fail=0)
+  [t+ 75s] replicas=2 job(succ=0 fail=0)
+  [t+ 90s] replicas=2 job(succ=0 fail=0)
+  [t+105s] replicas=2 job(succ=0 fail=0)
+  [t+120s] replicas=2 job(succ=0 fail=0)
+  [t+135s] replicas=2 job(succ=0 fail=0)
+  [t+150s] replicas=2 job(succ=0 fail=0)
+  [t+165s] replicas=2 job(succ=0 fail=0)
+  [t+180s] replicas=2 job(succ=0 fail=0)
+  [t+195s] replicas=2 job(succ=0 fail=0)
+  [t+210s] replicas=2 job(succ=0 fail=0)
+  [t+225s] replicas=2 job(succ=0 fail=1)
+         ✓ status is 200
+       ✗ lookup_duration................: avg=9.34ms   min=455.95µs med=1.71ms  p(90)=3.38ms   p(95)=4.57ms   p(99)=308.56ms max=999.23ms
+    slo  ✓ [ 100% ] 000/052 VUs  3m0s  60.00 iters/s
+    time="2026-08-03T04:15:16Z" level=error msg="thresholds on metrics 'lookup_duration' have been crossed"
+
+===== final restarts =====
+NAME                      READY   RESTARTS
+iocheck-775b966c5-5kl66   true    0
+iocheck-775b966c5-qzzg6   true    0
+postgres-0                true    0
+redis-c84c99bfb-nq6pd     true    0
+
+# RUN 5 done  12:15:21 +08
+
+===== RUN 5 V5 re-confirm: same 0.995 steady on the NOW-IDLE cluster =====
+# (V5's p99=308ms ran right after make all+V1-V4; expect a clean idle number here)
+started SLO run (hit=0.995 mode=steady rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+  [t+ 15s] replicas=2 job(succ=0 fail=0)
+  [t+ 30s] replicas=2 job(succ=0 fail=0)
+  [t+ 45s] replicas=2 job(succ=0 fail=0)
+  [t+ 60s] replicas=2 job(succ=0 fail=0)
+  [t+ 75s] replicas=2 job(succ=0 fail=0)
+  [t+ 90s] replicas=2 job(succ=0 fail=0)
+  [t+105s] replicas=2 job(succ=0 fail=0)
+  [t+120s] replicas=2 job(succ=0 fail=0)
+  [t+135s] replicas=2 job(succ=0 fail=0)
+  [t+150s] replicas=2 job(succ=0 fail=0)
+  [t+165s] replicas=2 job(succ=0 fail=0)
+  [t+180s] replicas=2 job(succ=0 fail=0)
+  [t+195s] replicas=2 job(succ=0 fail=0)
+  [t+210s] replicas=2 job(succ=0 fail=0)
+  [t+225s] replicas=2 job(succ=1 fail=0)
+         ✓ status is 200
+       ✓ lookup_duration................: avg=5.02ms   min=476.7µs  med=1.5ms    p(90)=2.78ms   p(95)=3.43ms   p(99)=8.9ms    max=726.62ms
+    slo  ✓ [ 100% ] 000/050 VUs  3m0s  60.00 iters/s
+# re-confirm done 13:23:35 +08
