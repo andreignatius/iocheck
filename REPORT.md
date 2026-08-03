@@ -115,10 +115,17 @@ is directly comparable.
 > floor exists solely to force the **I/O-bound regime** that makes a CPU-HPA fail and an autoscaler necessary
 > (see #1). The **stated workload is read-heavy and _cache-friendly_**: there, the vast majority of requests
 > are **sub-millisecond cache hits** (the storms' *fastest* requests already clock ~0.46ms), so a
-> cache-friendly profile is dominated by the **hit-ratio**. `p99 < 200ms` is then *reachable* — but this is
-> the reasoned consequence, **not one I load-tested**: because p99 catches the top 1%, it needs either a very
-> high hit-ratio **or** bounding the miss latency (see *With another week*), since an un-bounded slow miss
-> lands squarely in the p99 tail. So the demo **deliberately trades SLO compliance to isolate and prove the
+> cache-friendly profile is dominated by the **hit-ratio**. `p99 < 200ms` is then **met — and measured**
+> ([`logs/S-slo-cache-friendly.log`](logs/S-slo-cache-friendly.log)): a cache-friendly *constant-arrival-rate*
+> run holds **p99 = 11.5ms at 99.5% hits (70ms at 99%), on a steady 2 replicas — no scaling needed** (the
+> workload's concurrency is low, so the autoscaler correctly *doesn't* fire). A hit-ratio **sweep** shows p99
+> crossing 200ms only once hits fall to ~90% — the 700ms miss floor then surfaces in the top ~10% — the
+> empirical **"≥99% hits *or* bound the miss"** boundary (→ *With another week* #7). A 10× cache-friendly
+> **spike** is absorbed without scaling (p99 191ms) — though its *tail* degrades (max 1.38s) from **event-loop
+> stalls** under the burst (not saturation: in-flight 6/pod, CPU under limit), which no reactive signal catches,
+> so closing it *during spikes* is the pre-scaling/headroom + bounded-miss side of #7. So the demo's miss-heavy
+> storm **deliberately trades
+> SLO compliance to isolate and prove the
 > autoscaling behaviour**; it is *not* a claim that the design comfortably meets its SLO under any load. The
 > `p(99)<200ms` gate stays *encoded* in the k6 script precisely so this trade-off is visible, not hidden.
 

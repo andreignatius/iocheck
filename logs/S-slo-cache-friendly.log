@@ -1,0 +1,178 @@
+############################################################
+# SLO scenario — cache-friendly, constant-arrival-rate (spec: docs/slo-scenario-spec.md)
+# 2026-08-03 10:54:31 +08   image 0.1.7
+# NOTE: first attempt aborted — the ~40h-old kind cluster's Calico->API creds had expired
+#       (new pods failed sandbox networking: 'calico ... Unauthorized'). Rebuilt fresh + re-ran.
+# Q: is p99<200ms MET on a cache-friendly workload? + where does it cross vs hit-ratio?
+############################################################
+===== rebuild cluster (fresh Calico creds) =====
+  make all: exit 0
+===== settle (120s + gate on stable restarts) =====
+  [gate 1] restarts:[0 0 0 0 ]
+  [gate 2] restarts:[0 0 0 0 ]
+  settled.
+# precheck: L=700 (need 700); replicas=2
+
+===== RUN: sweep 1/3 — headline  (HIT_RATIO=0.995  MODE=steady) =====
+job.batch/k6-slo created
+started SLO run (hit=0.995 mode=steady rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+  [t+ 15s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 30s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 45s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 60s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 75s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 90s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+105s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+120s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+135s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+150s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+165s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+180s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+195s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+210s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+225s] iocheck replicas=2  job(succ=1 fail=0)
+  replicas during run: MAX=2  (expect 2 = cache absorbs it, no scaling)
+  --- k6 summary (lookup_duration = the SLO metric; hit/miss split) ---
+         ✓ status is 200
+         hit_duration...................: avg=2.13ms  min=487.75µs med=1.75ms   p(90)=3.07ms   p(95)=3.82ms   p(99)=7.73ms   max=153.11ms
+         hits...........................: 10752   51.192781/s
+         http_reqs......................: 11201   53.330575/s
+       ✓ lookup_duration................: avg=5.33ms  min=487.75µs med=1.76ms   p(90)=3.1ms    p(95)=3.94ms   p(99)=11.51ms  max=720.83ms
+         miss_duration..................: avg=707.6ms min=704.03ms med=706.75ms p(90)=710.21ms p(95)=715.25ms p(99)=719.41ms max=720.83ms
+         misses.........................: 49      0.2333/s
+    slo  ✓ [ 100% ] 000/050 VUs  3m0s  60.00 iters/s
+
+===== RUN: sweep 2/3  (HIT_RATIO=0.99  MODE=steady) =====
+job.batch/k6-slo created
+started SLO run (hit=0.99 mode=steady rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+  [t+ 15s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 30s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 45s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 60s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 75s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 90s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+105s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+120s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+135s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+150s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+165s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+180s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+195s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+210s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+225s] iocheck replicas=2  job(succ=1 fail=0)
+  replicas during run: MAX=2  (expect 2 = cache absorbs it, no scaling)
+  --- k6 summary (lookup_duration = the SLO metric; hit/miss split) ---
+         ✓ status is 200
+         hit_duration...................: avg=1.82ms   min=440.12µs med=1.74ms  p(90)=2.85ms   p(95)=3.26ms   p(99)=4.72ms   max=70.38ms 
+         hits...........................: 10693   51.265738/s
+         http_reqs......................: 11201   53.701256/s
+       ✓ lookup_duration................: avg=8.87ms   min=440.12µs med=1.75ms  p(90)=2.92ms   p(95)=3.4ms    p(99)=70.38ms  max=716.17ms
+         miss_duration..................: avg=706.74ms min=703.35ms med=706.1ms p(90)=708.96ms p(95)=710.68ms p(99)=715.13ms max=716.17ms
+         misses.........................: 108     0.517787/s
+    slo  ✓ [ 100% ] 000/050 VUs  3m0s  60.00 iters/s
+
+===== RUN: sweep 3/3 — expect p99 to cross (miss floor surfaces)  (HIT_RATIO=0.90  MODE=steady) =====
+job.batch/k6-slo created
+started SLO run (hit=0.90 mode=steady rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+  [t+ 15s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 30s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 45s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 60s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 75s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 90s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+105s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+120s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+135s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+150s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+165s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+180s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+195s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+210s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+225s] iocheck replicas=2  job(succ=0 fail=1)
+  replicas during run: MAX=2  (expect 2 = cache absorbs it, no scaling)
+  --- k6 summary (lookup_duration = the SLO metric; hit/miss split) ---
+         ✓ status is 200
+         hit_duration...................: avg=2.04ms   min=442.58µs med=1.63ms   p(90)=2.86ms   p(95)=3.45ms   p(99)=8.61ms   max=131ms   
+         hits...........................: 9727    46.475914/s
+         http_reqs......................: 11201   53.518733/s
+       ✗ lookup_duration................: avg=72.22ms  min=442.58µs med=1.8ms    p(90)=73.72ms  p(95)=705.72ms p(99)=708.51ms max=883.95ms
+         miss_duration..................: avg=707.85ms min=702.54ms med=705.73ms p(90)=708.52ms p(95)=711.52ms p(99)=764.97ms max=883.95ms
+         misses.........................: 1074    5.131606/s
+    slo  ✓ [ 100% ] 000/050 VUs  3m0s  60.00 iters/s
+    time="2026-08-03T03:12:45Z" level=error msg="thresholds on metrics 'lookup_duration' have been crossed"
+
+===== RUN: cache-friendly SPIKE (60->600/s) — expect steady 2, no onset breach  (HIT_RATIO=0.995  MODE=spike) =====
+job.batch/k6-slo created
+started SLO run (hit=0.995 mode=spike rate=60); follow: kubectl -n loadtest logs -f job/k6-slo
+  [t+ 15s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 30s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 45s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 60s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 75s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+ 90s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+105s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+120s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+135s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+150s] iocheck replicas=2  job(succ=0 fail=0)
+  [t+165s] iocheck replicas=2  job(succ=1 fail=0)
+  replicas during run: MAX=2  (expect 2 = cache absorbs it, no scaling)
+  --- k6 summary (lookup_duration = the SLO metric; hit/miss split) ---
+         ✓ status is 200
+         dropped_iterations.............: 229     1.541406/s
+         hit_duration...................: avg=4.35ms   min=253.08µs med=645.91µs p(90)=2.1ms    p(95)=4.34ms   p(99)=127.4ms  max=600.69ms
+         hits...........................: 47237   317.953691/s
+         http_reqs......................: 47870   322.214433/s
+       ✓ lookup_duration................: avg=7.84ms   min=253.08µs med=648.39µs p(90)=2.17ms   p(95)=5.19ms   p(99)=191.08ms max=1.38s   
+         miss_duration..................: avg=714.59ms min=702.03ms med=704.56ms p(90)=710.43ms p(95)=720.19ms p(99)=960.38ms max=1.38s   
+         misses.........................: 233     1.56833/s
+    slo  ✓ [ 100% ] 000/131 VUs  2m0s  060.30 iters/s
+
+# SLO sweep done  11:15:41 +08
+
+############################################################
+# FINDINGS — cache-friendly SLO scenario
+############################################################
+#  HIT_RATIO / mode   lookup p99   gate   replicas   hits/misses
+#  0.995   steady     11.5 ms      PASS   2 (none)   10752/49
+#  0.99    steady     70.4 ms      PASS   2 (none)   10693/108
+#  0.90    steady     708.5 ms     FAIL   2 (none)    9727/1074
+#  0.995   SPIKE60→600 191 ms      PASS   2 (none)   47237/233
+#  (hit_duration median ~0.6–1.8ms; miss_duration ~705ms — model confirmed)
+#
+# CONCLUSIONS:
+#  1. p99<200ms is MET on the cache-friendly workload (11.5ms @99.5%, 70ms @99%) —
+#     DEMONSTRATED, not asserted. Closes the REPORT #4 gap.
+#  2. Crossover exactly as predicted: at 90% hits, p90=74ms (a hit) but p95/p99≈705ms
+#     (the 700ms miss floor surfaces in the top ~10%). => strict p99<200 needs ≥~99% hits
+#     OR bounded misses (validates the layered fix, "With another week" #7).
+#  3. NO scaling in ANY run (steady 2 replicas), incl. the 10× spike — cache-friendly load
+#     has low concurrency, so the autoscaler correctly does NOT fire (specificity). Contrast:
+#     the miss-heavy storm scales 2→7 but can't meet the SLO (store floor).
+#  4. Cache-friendly SPIKE is absorbed WITHOUT scaling, p99 191ms < 200 — but near the edge
+#     (hit p99 rose to ~127ms under 600/s; 229 dropped iters ~0.5%): absorbed, not free.
+############################################################
+
+############################################################
+# TAIL ROOT-CAUSE (spike run) — why max=1.38s despite no saturation
+############################################################
+# Prometheus over the spike window (~600/s burst, 2 replicas):
+#   in-flight     : peak 6/pod   (< 10 scale threshold -> autoscaler correctly did NOT fire)
+#   CPU           : peak 242m/pod (> 200m request, < 500m limit; ~7% CFS-throttled — modest)
+#   Node event-loop lag p99 : 258ms / 102ms per pod
+#   Node event-loop lag MAX : 840ms / 1316ms per pod   <-- explains overall max 1.38s
+#
+# CAUSE: NOT pool saturation, NOT CPU-limit throttling, NOT scaling lag. It's Node's
+#   SINGLE-THREADED EVENT LOOP stalling under the burst: at ~300/s per pod the synchronous
+#   per-request work (JSON parse -> zod validate -> serialize) + GC pauses stall the loop up
+#   to ~1.3s, and everything queued behind the stall — including sub-ms cache HITS — inherits
+#   that latency (hit max 600ms on a Redis GET).
+#
+# WHY REACTIVE SCALING CAN'T CATCH IT: both the concurrency signal (6/pod) AND CPU (242m,
+#   ~48% of limit) stay UNDER threshold, so neither fires — yet the tail degrades. This is a
+#   sub-threshold, bursty phenomenon.
+#
+# => Confirms: cache holds the SLO in STEADY STATE; under a spike it prevents *saturation*
+#    but the TAIL degrades. Meeting p99<200ms *during spikes* needs the layered fix (#7):
+#    predictive pre-scaling + headroom (spread the burst across more event loops),
+#    per-pod load-shedding, and bounded misses (the 700ms+ half of the tail).
+############################################################

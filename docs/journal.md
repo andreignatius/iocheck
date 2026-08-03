@@ -387,6 +387,16 @@ Andre asked whether "sub-ms cache hits → p99<200ms met comfortably" is actuall
 ### 2026-08-02 — transcript reopened + brought current (Turns 66–79)
 Andre asked to update the transcript. Removed the premature Turn-65 end-marker and logged Turns **66–79** verbatim (cover-email review, RUN 4, the L=50 latency-sweep experiment, the REPORT empirical-footnote + SLO-honesty/layered-fix pass). Integrity re-verified: 79 turns contiguous, no gaps/dupes, every turn has both sections, exactly one end-marker. `docs/transcript.md` is back in the pending-push set.
 
+### 2026-08-03 — cache-friendly SLO scenario built + run (Andre) — p99<200ms DEMONSTRATED
+Built the second k6 scenario from the reviewed spec ([`docs/slo-scenario-spec.md`](slo-scenario-spec.md)) to *measure* the SLO claim, not assert it.
+- **Artifacts:** `k8s/loadtest/cache-friendly.js` (open-model constant/ramping-arrival-rate; malicious hot-set seeded in `setup()` + warmed; p99 threshold on a custom `lookup_duration` trend so warm-up misses don't pollute it), `k8s/loadtest/20-k6-slo-job.yaml` (admin key via a loadtest-ns secret), Makefile `loadtest-slo` (params HITRATIO/MODE/RATE).
+- **Cluster note:** first run aborted — the ~40h-old kind cluster's Calico→API creds had expired (new pods failed sandbox networking, `Unauthorized`). Rebuilt fresh (`make all` exit 0) and re-ran. (Real: kind isn't meant to run for days.)
+- **Results** ([`logs/S-slo-cache-friendly.log`](../logs/S-slo-cache-friendly.log)): **p99=11.5ms @99.5% hits, 70ms @99% — PASS**; **crosses at 90%** (p99=708ms; the 700ms miss floor surfaces in the top ~10%, p90 still 74ms); **no scaling (steady 2)** in *every* run incl. a **10× spike** (p99 191ms, absorbed without scaling). hit median ~0.6–1.8ms, miss ~705ms. Sweep {0.995,0.99,0.90} + spike.
+- **Demonstrates:** SLO is met on the cache-friendly workload; the crossover empirically proves the "≥99% hits or bound the miss" condition (→ "With another week" #7); the autoscaler correctly does NOT fire for cache-friendly load (specificity). Nuance kept: spike p99 (191ms) is near the edge + 229 dropped iters (~0.5%) — absorbed, not free.
+- **REPORT #4 updated** with the measured result (replaced the "not one I load-tested" hedge). Logs-index row added.
+- **Spike tail root-caused (Andre asked why max=1.38s):** Prometheus showed it's **Node event-loop stalls**, not saturation/throttling/scaling-lag — event-loop lag peaked **840ms/1316ms per pod** (explains the 1.38s max) while in-flight stayed 6/pod (<10) and CPU 242m (<500m limit, ~7% CFS throttle). At ~300/s per pod the single-threaded loop stalls in bursts (sync parse/validate/serialize + GC), so even sub-ms cache hits queue behind the stall. **No reactive signal catches it** (concurrency AND CPU sub-threshold) → the fix is the predictive/headroom + bounded-miss side of #7. Recorded in the log's TAIL ROOT-CAUSE block; REPORT #4 spike line tightened to acknowledge the tail.
+- **Uncommitted — Andre to review + commit if clean** (run was clean).
+
 ### Open items to carry forward
 - [ ] Cache-stampede protection (singleflight + jittered TTL) before load testing.
 - [x] Wire audit log on `/ioc` (§S7) — DONE (ioc_upsert + ioc_auth_denied, 2026-07-31).

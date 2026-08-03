@@ -128,7 +128,12 @@ prometheus-open: ## Port-forward Prometheus to localhost:9090
 	kubectl -n monitoring port-forward svc/prometheus 9090:9090
 
 # ---- Load test (M5/M6) -------------------------------------------------------
-.PHONY: loadtest loadtest-logs loadtest-clean
+.PHONY: loadtest loadtest-slo loadtest-logs loadtest-clean
+
+# Cache-friendly SLO scenario params (override on the CLI):
+HITRATIO ?= 0.995
+MODE     ?= steady
+RATE     ?= 60
 
 loadtest: ## Run the k6 storm Job (in-cluster, hits the Service). Re-runnable.
 	kubectl apply -f k8s/loadtest/00-namespace.yaml
@@ -138,6 +143,20 @@ loadtest: ## Run the k6 storm Job (in-cluster, hits the Service). Re-runnable.
 	kubectl -n loadtest delete job k6-storm --ignore-not-found
 	kubectl apply -f k8s/loadtest/10-k6-job.yaml
 	@echo "started. follow with: make loadtest-logs"
+
+loadtest-slo: ## Cache-friendly SLO scenario (params: HITRATIO=0.995 MODE=steady|spike RATE=60)
+	kubectl apply -f k8s/loadtest/00-namespace.yaml
+	kubectl create configmap k6-slo-scripts -n loadtest \
+	  --from-file=cache-friendly.js=k8s/loadtest/cache-friendly.js \
+	  --dry-run=client -o yaml | kubectl apply -f -
+	@set -a; . ./.env; set +a; kubectl create secret generic k6-slo-secret -n loadtest \
+	  --from-literal=ioc-admin-api-key="$$IOC_ADMIN_API_KEY" --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n loadtest delete job k6-slo --ignore-not-found
+	@sed -e 's|value: "0.995".*|value: "$(HITRATIO)"|' \
+	     -e 's|value: "steady".*|value: "$(MODE)"|' \
+	     -e 's|value: "60"|value: "$(RATE)"|' \
+	     k8s/loadtest/20-k6-slo-job.yaml | kubectl apply -f -
+	@echo "started SLO run (hit=$(HITRATIO) mode=$(MODE) rate=$(RATE)); follow: kubectl -n loadtest logs -f job/k6-slo"
 
 loadtest-logs: ## Follow the running k6 Job logs
 	kubectl -n loadtest wait --for=condition=ready pod -l app=k6-storm --timeout=60s || true

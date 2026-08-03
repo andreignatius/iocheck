@@ -1,0 +1,45 @@
+# Cache-friendly SLO scenario as a run-to-completion Job. Script from the k6-slo-scripts
+# ConfigMap; admin key (to seed the hot set) from the k6-slo-secret — both created by
+# `make loadtest-slo` (the key is copied from .env into the loadtest namespace, since
+# Secrets don't cross namespaces). Defaults here = the headline run (0.995, steady).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-slo
+  namespace: loadtest
+spec:
+  backoffLimit: 0
+  completions: 1
+  template:
+    metadata:
+      labels: { app: k6-slo }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.54.0
+          command: ["k6", "run", "/scripts/cache-friendly.js"]
+          env:
+            - name: TARGET
+              value: "http://iocheck.iocheck.svc.cluster.local:3000"
+            - name: HIT_RATIO
+              value: "0.995"          # headline; sweep overrides to 0.99 / 0.90
+            - name: MODE
+              value: "steady"         # 'steady' | 'spike'
+            - name: RATE
+              value: "60"
+            - name: HOT
+              value: "200"
+            - name: IOC_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef: { name: k6-slo-secret, key: ioc-admin-api-key }
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests: { cpu: "200m", memory: "128Mi" }
+            limits: { cpu: "2", memory: "512Mi" }   # headroom for the 600/s spike variant
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-slo-scripts

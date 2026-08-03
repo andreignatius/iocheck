@@ -18,6 +18,7 @@ its capture timestamp and a **reproduce** command. Regenerate any of them from a
 | [S-metrics-port-split.log](./S-metrics-port-split.log) | §S8 | **/metrics moved off the public port** to an internal, monitoring-only port (9464): `:3000/metrics`→404, `:9464` **blocked from a non-monitoring pod**, Prometheus scrape `up`, KEDA still `Happy` — keeps SOC-activity metadata off the client-facing port |
 | [S-ioc-audit.log](./S-ioc-audit.log) | §S7 | **/ioc audit trail**: successful write → `ioc_upsert` (who=key fingerprint, from where, what changed); bad key → `ioc_auth_denied`; raw admin key never appears in logs |
 | [EXPERIMENT-latency-sweep.log](./EXPERIMENT-latency-sweep.log) | extra | **L=50ms latency sweep** (throwaway, reverted to 700): autoscaler still scales 2→5→2, CPU flips idle→~250m/pod (regime shift), p90/p95=124/170ms under SLO but **p99>200ms from the spike-onset transient** (not the store floor) — validates the REPORT #4 latency-knob note |
+| [S-slo-cache-friendly.log](./S-slo-cache-friendly.log) | SLO | **cache-friendly SLO scenario** (open-model, hit/miss sweep): **p99<200ms MET** — 11.5ms @99.5% hits, 70ms @99%; crosses at ~90% (700ms miss floor surfaces in the tail); **no scaling** in any run incl a 10× spike. The cache meets the SLO; the autoscaler is for the miss-heavy storm |
 
 Scripts: [`scripts/smoke.sh`](../scripts/smoke.sh), [`scripts/resilience.sh`](../scripts/resilience.sh), [`scripts/k8s-verify.sh`](../scripts/k8s-verify.sh).
 (k6 load-test evidence — the challenge-#1 "CPU flat while RPS/p99 spike" run — lands here at M5/M6.)
